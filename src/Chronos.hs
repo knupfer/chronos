@@ -5,7 +5,6 @@
 
 module Chronos where
 
-import qualified Data.List.NonEmpty as N
 import Control.Arrow
 import Numeric
 import Numeric.Natural
@@ -15,22 +14,32 @@ import Data.Time.Clock.System
 import Control.Monad
 import System.Console.ANSI
 import Control.Exception
+import Control.DeepSeq
+import System.Process
 
 type Name = String
-type Duration = Rational
-
-newtype Variance a = Variance a deriving Show
-newtype Sigma a = Sigma a deriving Show
-
-data Chronometry
-  = Chronometry Name (N.NonEmpty Duration) deriving Show
 
 data Param = Relative | Absolute
 
 data Benchmark a = Benchmark Name [Analysis a]
 
-bench :: Name -> IO [Analysis a] -> IO (Benchmark a)
-bench n io = Benchmark n <$> io
+benchIO :: Name -> IO a -> IO (Benchmark 'Absolute)
+benchIO n io = fmap (Benchmark n) (analyse <$> go)
+  where
+    go = unsafeInterleaveIO $ do
+            begin <- getSystemTime
+            void $ io
+            end <- getSystemTime
+            let x = toSeconds end - toSeconds begin
+            (x:) <$> go
+    toSeconds t = fromIntegral (systemSeconds t) + fromIntegral (systemNanoseconds t) / 1000000000
+
+benchShell :: Name -> String -> IO (Benchmark 'Absolute)
+benchShell n cmd = benchIO n $ withCreateProcess (shell cmd) {std_out = CreatePipe, std_err = CreatePipe} $ \_ _ _ ph ->
+  void $ waitForProcess ph
+
+bench :: NFData b => Name -> (a -> b) -> a -> IO (Benchmark 'Absolute)
+bench n f = benchIO n . evaluate . force . f
 
 defaultMain :: [IO (Benchmark 'Absolute)] -> IO ()
 defaultMain ioBench = bracket_ hideCursor showCursor $ do
@@ -77,17 +86,6 @@ printer xs = do
       . reverse
       . sortOn ((\ana -> 1/ 2^samples ana + stdError ana / sqrt (fromIntegral (samples ana))) . head . snd)
       . zip [1 :: Int ..]
-
-nfIO :: (a -> IO b) -> a -> IO [Analysis 'Absolute]
-nfIO f a = analyse <$> go
-  where go = unsafeInterleaveIO $ do
-            begin <- getSystemTime
-            void $ f a
-            end <- getSystemTime
-            let x = (toNanoSeconds end - toNanoSeconds begin) / 1000000000
-            xs <- go
-            return (x:xs)
-            where toNanoSeconds t = fromIntegral (systemSeconds t) * 1000000000 + fromIntegral (systemNanoseconds t)
 
 data Analysis (x :: Param)
   = Analysis
@@ -150,7 +148,7 @@ prettyScientific x n unit = (\(ds, e) -> g (significants $ ds ++ repeat 0) ++ f 
     showE e | e < 0     = '⁻' : showE (negate e)
             | otherwise = (\(a, b) -> showE a ++ showE b) $ divMod e 10
 
-analyse :: [Duration] -> [Analysis 'Absolute]
+analyse :: [Rational] -> [Analysis 'Absolute]
 analyse [] = []
 analyse (y:ys)
   = zipWith3 (\m q n -> Analysis n (q / fromIntegral (n-1)) m) (tail means) (tail qs) [2..]
