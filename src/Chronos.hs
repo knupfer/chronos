@@ -9,6 +9,7 @@ import Control.Arrow
 import Numeric
 import Numeric.Natural
 import Data.List
+import System.IO
 import System.IO.Unsafe
 import Data.Time.Clock.System
 import Control.Monad
@@ -42,7 +43,8 @@ bench :: NFData b => Name -> (a -> b) -> a -> IO (Benchmark 'Absolute)
 bench n f = benchIO n . evaluate . force . f
 
 defaultMain :: [IO (Benchmark 'Absolute)] -> IO ()
-defaultMain ioBench = bracket_ hideCursor showCursor $ do
+defaultMain ioBench = do
+  hFlush stdout
   xs <- sequenceA ioBench
   let benchs = map (\(Benchmark n as) -> (n, map relative as)) xs
   mapM_ (\b -> printName (fst b) >> putStrLn "") benchs
@@ -61,26 +63,33 @@ printer xs = do
     mapM_ update xs
     go xs
   where
-    go lst@(z:_) = update z >> go (increasePrecision lst)
+    go lst@(z:_) = do
+      update z
+      go (increasePrecision lst)
     go [] = error "impossible!"
     update :: (Int, [Analysis 'Relative]) -> IO ()
     update (n,bs) = do
       let mv = ((length xs - n) + 1) * 2
-      bracket_ (cursorUpLine mv)
-               (cursorDownLine mv) $ do
-          cursorDownLine 1
-          setSGR [SetColor Foreground Vivid Red]
-          putStrLn ">"
-          setSGR [Reset]
-          cursorUpLine 2
-          f bs
-          cursorUpLine 2
+      cursorUpLine mv
+      cursorDownLine 1
+      setSGR [SetColor Foreground Vivid Red]
+      putStrLn ">"
+      setSGR [Reset]
+      cursorUpLine 2
+      cursorDownLine mv
+      hFlush stdout
+      f mv bs
+      cursorUpLine 2
+      cursorDownLine mv
 
-    f (a:_) = do
+    f :: Int -> [Analysis 'Relative] -> IO ()
+    f n (a:_) = do
+      new <- evaluate $ force $ show a
+      cursorUpLine n
       cursorDownLine 1
       clearLine
-      putStrLn ("  " ++ show a)
-    f _ = error "impossible!"
+      putStrLn ("  " ++ new)
+    f _ _ = error "impossible!"
     increasePrecision
       = (\(a:bs) -> second tail a:bs)
       . reverse
