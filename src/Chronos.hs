@@ -46,7 +46,7 @@ defaultMain ioBench = bracket_ hideCursor showCursor $ do
   xs <- sequenceA ioBench
   let benchs = map (\(Benchmark n as) -> (n, map relative as)) xs
   mapM_ (\b -> printName (fst b) >> putStrLn "") benchs
-  printer $ map snd benchs
+  printer . zip [1..] $ map snd benchs
 
 printName :: Name -> IO ()
 printName name = do
@@ -56,25 +56,25 @@ printName name = do
   clearLine
   setSGR [Reset]
 
-printer :: [[Analysis 'Relative]] -> IO ()
+printer :: [(Int, [Analysis 'Relative])] -> IO ()
 printer xs = do
-    cursorUpLine (length xs * 2)
-    mapM_ f xs
-    update (increasePrecision xs)
+    mapM_ update xs
+    go xs
   where
-    update :: (Int, [[Analysis 'Relative]]) -> IO ()
+    go lst@(z:_) = update z >> go (increasePrecision lst)
+    go [] = error "impossible!"
+    update :: (Int, [Analysis 'Relative]) -> IO ()
     update (n,bs) = do
       let mv = ((length xs - n) + 1) * 2
-      cursorUpLine mv
-      cursorDownLine 1
-      setSGR [SetColor Foreground Vivid Red]
-      putStrLn ">"
-      setSGR [Reset]
-      cursorUpLine 2
-      f (bs !! (n-1))
-      cursorUpLine 2
-      cursorDownLine mv
-      update (increasePrecision bs)
+      bracket_ (cursorUpLine mv)
+               (cursorDownLine mv) $ do
+          cursorDownLine 1
+          setSGR [SetColor Foreground Vivid Red]
+          putStrLn ">"
+          setSGR [Reset]
+          cursorUpLine 2
+          f bs
+          cursorUpLine 2
 
     f (a:_) = do
       cursorDownLine 1
@@ -82,11 +82,9 @@ printer xs = do
       putStrLn ("  " ++ show a)
     f _ = error "impossible!"
     increasePrecision
-      = (\bs -> (fst (head bs), map snd (sortOn fst bs)))
-      . (\(a:bs) -> second tail a:bs)
+      = (\(a:bs) -> second tail a:bs)
       . reverse
       . sortOn ((\ana -> 1/ 2^samples ana + stdError ana / sqrt (fromIntegral (samples ana))) . head . snd)
-      . zip [1 :: Int ..]
 
 data Analysis (x :: Param)
   = Analysis
@@ -152,7 +150,7 @@ prettyScientific x n unit = (\(ds, e) -> g (significants $ ds ++ repeat 0) ++ f 
 analyse :: [Rational] -> [Analysis 'Absolute]
 analyse [] = []
 analyse (y:ys)
-  = zipWith3 (\m q n -> Analysis n (q / fromIntegral (n-1)) m) (tail means) (tail qs) [2..]
+  = Analysis 1 0 y:zipWith3 (\m q n -> Analysis n (q / fromIntegral (n-1)) m) (tail means) (tail qs) [2..]
 
   where
 
