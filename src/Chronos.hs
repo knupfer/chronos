@@ -47,8 +47,11 @@ defaultMain ioBench = do
   hFlush stdout
   xs <- sequenceA ioBench
   let benchs = map (\(Benchmark n as) -> (n, map relative as)) xs
-  mapM_ (\b -> printName (fst b) >> putStrLn "") benchs
+  mapM_ (\b -> printName (fst b) >> putStrLn "" >> putStrLn "") benchs
   printer . zip [1..] $ map snd benchs
+
+printBar :: Analysis 'Relative -> IO ()
+printBar a = putStrLn (take 100 $ "  " ++ replicate (round (mean a * 60)) '█' ++ replicate (round (fromInteger (round (mean a * 60)) * sigma a)) '─')
 
 printName :: Name -> IO ()
 printName name = do
@@ -60,36 +63,34 @@ printName name = do
 
 printer :: [(Int, [Analysis 'Relative])] -> IO ()
 printer xs = do
-    mapM_ update xs
+    mapM_ (update False . pure) xs
     go xs
   where
-    go lst@(z:_) = do
-      update z
-      go (increasePrecision lst)
-    go [] = error "impossible!"
-    update :: (Int, [Analysis 'Relative]) -> IO ()
-    update (n,bs) = do
-      let mv = ((length xs - n) + 1) * 2
-      cursorUpLine mv
-      cursorDownLine 1
-      setSGR [SetColor Foreground Vivid Red]
-      putStrLn ">"
-      setSGR [Reset]
-      cursorUpLine 2
-      cursorDownLine mv
-      hFlush stdout
-      f mv bs
-      cursorUpLine 2
-      cursorDownLine mv
+    go zs = do
+      update True zs
+      go (increasePrecision zs)
+    update :: Bool -> [(Int, [Analysis 'Relative])] -> IO ()
+    update _ [] = return ()
+    update b ((n,bs):zs) = do
+      let mv = ((length xs - n) + 1) * 3
+      bracket_ (cursorUpLine mv) (cursorDownLine mv) $ do
+        cursorDownLine 1
+        setSGR [SetColor Foreground Vivid Red]
+        putStrLn ">"
+        setSGR [Reset]
+        cursorUpLine 2
+        cursorDownLine mv
+        hFlush stdout
+        new <- evaluate $ force $ show $ head bs
+        cursorUpLine mv
+        cursorDownLine 1
+        clearLine
+        putStrLn ("  " ++ new)
+        if b
+          then clearLine >> printBar ((head bs) {mean = mean (head bs) / (maximum $  map (mean . head . snd) ((n,bs):zs))})
+          else putStrLn ""
+        cursorUpLine 3
 
-    f :: Int -> [Analysis 'Relative] -> IO ()
-    f n (a:_) = do
-      new <- evaluate $ force $ show a
-      cursorUpLine n
-      cursorDownLine 1
-      clearLine
-      putStrLn ("  " ++ new)
-    f _ _ = error "impossible!"
     increasePrecision
       = (\(a:bs) -> second tail a:bs)
       . reverse
