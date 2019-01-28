@@ -64,14 +64,15 @@ printer xs = do
   where
     update :: (Int, [[Analysis 'Relative]]) -> IO ()
     update (n,bs) = do
-      let mv = (length xs - n + 1) * 2
+      let mv = ((length xs - n) + 1) * 2
       cursorUpLine mv
       cursorDownLine 1
       setSGR [SetColor Foreground Vivid Red]
       putStrLn ">"
       setSGR [Reset]
       cursorUpLine 2
-      (f (bs !! (n-1)))
+      f (bs !! (n-1))
+      cursorUpLine 2
       cursorDownLine mv
       update (increasePrecision bs)
 
