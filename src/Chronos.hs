@@ -43,8 +43,7 @@ bench :: NFData b => Name -> (a -> b) -> a -> IO (Benchmark 'Absolute)
 bench n f = benchIO n . evaluate . force . f
 
 defaultMain :: [IO (Benchmark 'Absolute)] -> IO ()
-defaultMain ioBench = do
-  hFlush stdout
+defaultMain ioBench = bracket_ hideCursor showCursor $ do
   xs <- sequenceA ioBench
   let benchs = map (\(Benchmark n as) -> (n, map relative as)) xs
   mapM_ (\b -> printName (fst b) >> putStrLn "" >> putStrLn "") benchs
