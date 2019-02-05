@@ -1,18 +1,19 @@
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE DataKinds #-}
 
 module Chronos where
 
-import Control.Arrow
 import Numeric
 import Numeric.Natural
+import Data.Char
 import Data.List
 import System.IO
-import System.IO.Unsafe
 import Data.Time.Clock.System
 import Control.Monad
 import System.Console.ANSI
@@ -22,114 +23,157 @@ import System.Process
 
 type Name = String
 
-data Benchmark = Benchmark Name [Analysis]
-
-benchIO :: Name -> IO a -> IO (Benchmark)
-benchIO n io = fmap (Benchmark n) (analyse <$> go)
-  where
-    go = unsafeInterleaveIO $ do
-            overhead <- getSystemTime
-            begin <- getSystemTime
-            void $ io
-            end <- getSystemTime
-
-            let x = toSeconds end + toSeconds overhead - 2*toSeconds begin
-            (x:) <$> go
-    toSeconds t = fromIntegral (systemSeconds t) + fromIntegral (systemNanoseconds t) / 1000000000
-
-benchShell :: Name -> String -> IO (Benchmark)
-benchShell n cmd = benchIO n $ withCreateProcess (shell cmd) {std_out = CreatePipe, std_err = CreatePipe} $ \_ _ _ ph ->
-  void $ waitForProcess ph
-
-bench :: NFData b => Name -> (a -> b) -> a -> IO (Benchmark)
-bench n f = benchIO n . evaluate . force . f
-
-defaultMain :: [IO Benchmark] -> IO ()
-defaultMain ioBench = bracket_ hideCursor showCursor $ do
-  xs <- sequenceA ioBench
-  let benchs = map (\(Benchmark n as) -> (n, as)) xs
-  mapM_ (\b -> printName (fst b) >> putStrLn "" >> putStrLn "") benchs
-  printer . zip [1..] $ map snd benchs
-
-printBar :: Analysis -> IO ()
-printBar a = putStrLn (take 100 $ "  " ++ replicate (round (mean a * 60)) '█' ++ replicate (round (fromInteger (round (mean a * 60)) * sigma a)) '─')
-
-printName :: Name -> IO ()
-printName name = do
-  clearLine
-  setSGR [SetColor Foreground Vivid Cyan]
-  putStrLn name
-  clearLine
-  setSGR [Reset]
-
-printer :: [(Int, [Analysis])] -> IO ()
-printer xs = do
-    mapM_ (update False . pure) xs
-    go xs
-  where
-    go zs = do
-      update True zs
-      go (increasePrecision zs)
-    update :: Bool -> [(Int, [Analysis])] -> IO ()
-    update _ [] = return ()
-    update b ((n,bs):zs) = do
-      let mv = ((length xs - n) + 1) * 3
-      bracket_ (cursorUpLine mv) (cursorDownLine mv) $ do
-        cursorDownLine 1
-        setSGR [SetColor Foreground Vivid Red]
-        putStrLn "►"
-        setSGR [Reset]
-        cursorUpLine 2
-        cursorDownLine mv
-        hFlush stdout
-        new <- evaluate $ force $ show $ head bs
-        cursorUpLine mv
-        cursorDownLine 1
-        clearLine
-        putStrLn ("  " ++ new)
-        if b
-          then clearLine >> printBar ((relative $ head bs) {mean = mean (head bs) / (maximum $  map (mean . head . snd) ((n,bs):zs))})
-          else putStrLn ""
-        cursorUpLine 3
-
-    increasePrecision
-      = (\(a:bs) -> fastDrop a:bs)
-      . reverse
-      . sortOn ((\ana -> 1/ 2^samples ana + stdError (relative ana) / sqrt (fromIntegral (samples ana))) . head . snd)
-        where fastDrop a = second (drop (max 1 (min (10 - fromIntegral (samples (head (snd a))) `mod` 10) $ round ((1/100) / (max (1/10000) $ mean (head (snd a))))))) a
+data Benchmark
+  = Benchmark
+  { name :: Name
+  , runner :: (Analysis -> IO Analysis)
+  , analysis :: Analysis
+  }
 
 data Analysis
   = Analysis
-  { samples
-    :: Natural
-  , variance
-    :: Rational
-  , mean
-    :: Rational
+  { samples :: !Natural
+  , squaredWeights :: !Natural
+  , mean :: !Rational
+  , qFactor :: !Rational
+  , stdError :: !Double
   }
+
+variance :: Analysis -> Rational
+variance Analysis{..}
+  | samples <= 1 = 0
+  | otherwise = qFactor / fromIntegral (samples - 1)
+
+sigma :: Analysis -> Double
+sigma = sqrt . fromRational . variance
+
+stdError' :: Analysis -> Double
+stdError' Analysis{..}
+  | samples > 1 = sqrt (fromRational (fromIntegral squaredWeights * qFactor / fromIntegral (samples - 1))) / fromIntegral samples
+  | otherwise = 0
+
+step :: Benchmark -> IO Benchmark
+step (Benchmark n f a) = Benchmark n f <$> f a
+
+benchIO :: Name -> IO a -> Benchmark
+benchIO n io = Benchmark n f (Analysis 0 0 0 0 0)
+
+  where
+    f Analysis{..} = do
+      let weight | mean == 0 = 1
+                 | otherwise = max 1 (min samples . round $ 0.1 / mean)
+      time <- runBench weight
+      let newSamples = samples + weight
+          newMean = mean + fromIntegral weight * (time - mean) / fromIntegral newSamples
+          newQFactor = qFactor + fromIntegral weight * (time - mean) * (time - newMean)
+          newSquaredWeights = squaredWeights + weight*weight
+          new = Analysis newSamples newSquaredWeights newMean newQFactor 0
+      return $ new {stdError = stdError' new}
+
+    runBench weight = do
+            begin <- getSystemTime
+            replicateM_ (fromIntegral weight) $ io
+            end <- getSystemTime
+            return $ (toSeconds end - toSeconds begin) / fromIntegral weight
+    toSeconds t = fromIntegral (systemSeconds t) + fromIntegral (systemNanoseconds t) / 1000000000
+
+benchShell :: Name -> String -> Benchmark
+benchShell n cmd = benchIO n $ withCreateProcess (shell cmd) {std_out = CreatePipe, std_err = CreatePipe} $ \_ _ _ ph ->
+  void $ waitForProcess ph
+
+bench :: NFData b => Name -> (a -> b) -> a -> Benchmark
+bench n f = benchIO n . evaluate . force . f
+
+defaultMain :: [Benchmark] -> IO ()
+defaultMain bs = bracket_ hideCursor showCursor $ do
+  bs' <- forM bs $ \b -> do
+    printName (name b)
+    printIndicator
+    b' <- step b
+    printAnalysis (analysis b')
+    putStrLn ""
+    return b'
+
+  runMain . zip [1..] $ bs'
+
+runMain :: [(Int, Benchmark)] -> IO ()
+runMain xs = do
+  replicateM_ 3 $ putStrLn ""
+  go (1000 :: Int) xs
+  where
+    go 0 _ = return ()
+    go n zs = go (n-1) . increasePrecision =<< runHead zs
+
+    runHead [] = pure []
+    runHead ((n,u):us) = let mv = (length xs - n + 1) * 3
+                         in bracket_ (cursorUpLine (mv+2)) (cursorDownLine mv) $ do
+      printIndicator
+      u' <- step u
+      printAnalysis (analysis u')
+      printBar (Percentage . fromRational $ mean (analysis u') / maximum (map (mean . analysis . snd) $ (n,u'):us))
+               (Percentage $ sigma (analysis u') / fromRational (mean (analysis u')))
+      pure ((n,u'):us)
+
+    increasePrecision
+      = sortOn ((\ana -> negate $ 1/ 2^samples ana + (stdError ana / fromRational (mean ana)) / sqrt (fromIntegral $ samples ana)) . analysis . snd)
+
+printIndicator :: IO ()
+printIndicator = do
+  setSGR [SetColor Foreground Vivid Red]
+  putStr "►"
+  setSGR [Reset]
+  hFlush stdout
+
+printAnalysis :: Analysis -> IO ()
+printAnalysis ana = do
+  clearLine
+  putStrLn (' ':show ana)
+
+newtype Percentage = Percentage Double deriving (RealFrac, Real, Num, Fractional, Ord, Eq)
+
+printBar :: Percentage -> Percentage -> IO ()
+printBar m sd = do
+  clearLine
+  putStrLn (' ':' ':replicate (round len) '█' ++ take 40 (replicate (round (len * sd)) '─'))
+  where len = m * 60
+
+printName :: Name -> IO ()
+printName n = do
+  clearLine
+  setSGR [SetColor Foreground Vivid Cyan]
+  putStrLn n
+  clearLine
+  setSGR [Reset]
 
 instance Show Analysis where
   show a@Analysis{..}
-    = unwords
-    [ "x=" ++ prettyScientific (fromRational mean :: Double) (Just $ stdError a) 2 "s"
-    , "σ=" ++ prettyScientific ((100*) . sigma $ relative  a) Nothing 2 "%"
-    , "n=" ++ show samples
+    = concat
+    [ "x=", prettyScientific (fromRational mean) (Just stdError) "s "
+    , "σ=", prettyScientific (100*sigma a/fromRational mean) Nothing "% "
+    , "n=", show samples
     ]
 
-prettyScientific :: (RealFloat a) => a -> Maybe Double -> Int -> String -> String
-prettyScientific x b n unit | n < 1 = prettyScientific x b 1 unit
-prettyScientific x b n unit = (\(ds, e) -> mantissa (take (maybe n valLen b) $ ds ++ repeat 0) ++ maybe "" showError b ++ f e ++ unit) (floatToDigits 10 x)
+ord0 :: Int
+ord0 = ord '0'
+
+ordDot :: Int
+ordDot = ord '.'
+
+prettyScientific :: Double -> Maybe Double -> String -> String
+prettyScientific x b unit = concat $ case floatToDigits 10 <$> b of
+    Nothing -> [mantissa (take 2 $ sig ++ repeat 0), f expo, unit]
+    Just (errSig,errExpo) -> [mantissa (take (max 2 $ valLen errExpo) $ sig ++ repeat 0), showError errSig, f expo, unit]
   where
 
-    showError err = "(" ++ concatMap show (take n $ fst (floatToDigits 10 err) ++ repeat 0) ++ ")"
-
-    valLen e = snd (floatToDigits 10 x) - snd (floatToDigits 10 e) + n
-    mantissa (d:ds) | n == 1 = show d
-             | otherwise = show d ++ '.' : concatMap show ds
+    showError err = '(' : map (chr . (ord0+)) (take 2 $ err ++ repeat 0) ++ ")"
+    (sig,expo) = floatToDigits 10 x
+    valLen e = expo - e + 2
+    mantissa [d] = [chr $ ord0+d]
+    mantissa (d:ds) = map (chr . (ord0+)) (d:ordDot-ord0:ds)
     mantissa [] = ""
     f 1 = ""
-    f 2 = "·" ++ "10"
-    f e = "·" ++ "10" ++ showE (e-1)
+    f 2 = "·10"
+    f e = "·10" ++ showE (e-1)
 
 showE :: Integral a => a -> String
 showE = \case
@@ -145,25 +189,3 @@ showE = \case
   9 -> "⁹"
   n | n < 0     -> '⁻' : showE (negate n)
     | otherwise -> (\(a, b) -> showE a ++ showE b) $ divMod n 10
-
-analyse :: [Rational] -> [Analysis]
-analyse [] = []
-analyse (y:ys)
-  = Analysis 1 0 y:zipWith3 (\m q n -> Analysis n (q / fromIntegral (n-1)) m) (tail means) (tail qs) [2..]
-
-  where
-
-    means = y:zipWith3 (\m x n -> m + (x - m) / n) means ys [2..]
-    qs = 0:zipWith3 (\q x (m, m') -> q + (x - m) * (x - m')) qs ys (zip means (tail means))
-
-sigma :: Analysis -> Double
-sigma = sqrt . fromRational . variance
-
-stdError :: Analysis -> Double
-stdError = uncurry (/) . (sigma &&& sqrt . fromIntegral . samples)
-
-relative :: Analysis -> Analysis
-relative x = x{variance = variance x / mean x^(2::Int)}
-
-absolute :: Analysis -> Analysis
-absolute x = x{variance = variance x * mean x^(2::Int)}
