@@ -37,6 +37,7 @@ data Analysis
   , mean :: !Rational
   , qFactor :: !Rational
   , stdError :: !Double
+  , information :: !Double
   }
 
 variance :: Analysis -> Rational
@@ -56,7 +57,7 @@ step :: Benchmark -> IO Benchmark
 step (Benchmark n f a) = Benchmark n f <$> f a
 
 benchIO :: Name -> IO a -> Benchmark
-benchIO n io = Benchmark n f (Analysis 0 0 0 0 0)
+benchIO n io = Benchmark n f (Analysis 0 0 0 0 0 0)
 
   where
     f Analysis{..} = do
@@ -67,8 +68,11 @@ benchIO n io = Benchmark n f (Analysis 0 0 0 0 0)
           newMean = mean + fromIntegral weight * (time - mean) / fromIntegral newSamples
           newQFactor = qFactor + fromIntegral weight * (time - mean) * (time - newMean)
           newSquaredWeights = squaredWeights + weight*weight
-          new = Analysis newSamples newSquaredWeights newMean newQFactor 0
-      return $ new {stdError = stdError' new}
+          new = Analysis newSamples newSquaredWeights newMean newQFactor 0 0
+          newStdError = stdError' new
+          newInformation = recip $ 1/ 2^newSamples + (newStdError / fromRational newMean) / sqrt (fromIntegral newSamples)
+
+      return $ new {stdError = newStdError, information = newInformation}
 
     runBench weight = do
             begin <- getSystemTime
@@ -114,8 +118,7 @@ runMain xs = do
                (Percentage $ sigma (analysis u') / fromRational (mean (analysis u')))
       pure ((n,u'):us)
 
-    increasePrecision
-      = sortOn ((\ana -> negate $ 1/ 2^samples ana + (stdError ana / fromRational (mean ana)) / sqrt (fromIntegral $ samples ana)) . analysis . snd)
+    increasePrecision = sortOn (information . analysis . snd)
 
 printIndicator :: IO ()
 printIndicator = do
