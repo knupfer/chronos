@@ -56,50 +56,46 @@ stdError' Analysis{..}
 step :: Benchmark -> IO Benchmark
 step (Benchmark n f a) = Benchmark n f <$> f a
 
-benchIO :: Name -> IO a -> Benchmark
+benchIO :: Name -> Either (Int -> IO a) (IO a) -> Benchmark
 benchIO n io = Benchmark n f (Analysis 0 0 0 0 0 0)
 
   where
     f Analysis{..} = do
       let weight | mean == 0 = 1
-                 | otherwise = max 1 (min (samples `div` 2) . round $ 0.2 / mean)
-      time <- runBench weight
+                 | otherwise = max 1 (min samples . round $ 1 / sqrt (fromRational mean :: Double))
+      time <- runBench (fromIntegral weight)
       let newSamples = samples + weight
           newMean = mean + fromIntegral weight * (time - mean) / fromIntegral newSamples
           newQFactor = qFactor + fromIntegral weight * (time - mean) * (time - newMean)
           newSquaredWeights = squaredWeights + weight*weight
           new = Analysis newSamples newSquaredWeights newMean newQFactor 0 0
           newStdError = stdError' new
-          newInformation = recip $ 1/ 1.5^newSamples + (newStdError / fromRational newMean) / sqrt (fromIntegral newSamples)
+          newInformation = recip $ 1/ 1.5^newSamples + (newStdError / fromRational newMean) / fromIntegral newSamples
 
       return $ new {stdError = newStdError, information = newInformation}
 
     runBench weight = do
             begin <- getSystemTime
-            replicateM_ (fromIntegral weight) io
+            either (\i -> void $ i weight) (replicateM_ weight) io
             end <- getSystemTime
             return $ (toSeconds end - toSeconds begin) / fromIntegral weight
     toSeconds t = fromIntegral (systemSeconds t) + fromIntegral (systemNanoseconds t) / 1000000000
 
 benchShell :: Name -> String -> Benchmark
-benchShell n cmd = benchIO n $ withCreateProcess (shell cmd) {std_out = CreatePipe, std_err = CreatePipe} $ \_ _ _ ph ->
+benchShell n cmd = benchIO n $ Left $ \times -> withCreateProcess (shell (intercalate ";" $ replicate times cmd)) {std_out = CreatePipe, std_err = CreatePipe} $ \_ _ _ ph ->
   void $ waitForProcess ph
 
 bench :: NFData b => Name -> (a -> b) -> a -> Benchmark
-bench n f = benchIO n . evaluate . force . f
+bench n f = benchIO n . Right . evaluate . force . f
 
 defaultMain :: [Benchmark] -> IO ()
 defaultMain bs = bracket_ hideCursor showCursor $ do
-  bs' <- forM bs $ \b -> do
+  forM_ bs $ \b -> do
     printName (name b)
-    printIndicator
-    b' <- step b
-    printAnalysis (analysis b')
-    putStrLn ""
-    return b'
+    replicateM_ 2 (putStrLn "")
 
   putStrLn ""
-  runMain (length bs') . zip [1..] $ bs'
+  runMain (length bs) . zip [1..] $ bs
 
 runMain :: Int -> [(Int, Benchmark)] -> IO ()
 runMain len = fix (go>=>)
@@ -110,7 +106,9 @@ runMain len = fix (go>=>)
     runHead ((n,u):us) = let mv = (len - n) * 3 + 1
                          in bracket_ (cursorUpLine (mv+2)) (cursorDownLine mv) $ do
       printIndicator
+      cursorDownLine (mv+2)
       u' <- step u
+      cursorUpLine (mv+2)
       printAnalysis (analysis u')
       printBar (Percentage . fromRational $ mean (analysis u') / maximum (map (mean . analysis . snd) $ (n,u'):us))
                (Percentage $ sigma (analysis u') / fromRational (mean $ analysis u'))
@@ -127,8 +125,9 @@ printIndicator = do
 
 printAnalysis :: Analysis -> IO ()
 printAnalysis ana = do
+  result <- evaluate . force $ show ana
   clearLine
-  putStrLn (' ':show ana)
+  putStrLn (' ':' ':result)
 
 newtype Percentage = Percentage Double deriving (RealFrac, Real, Num, Fractional, Ord, Eq)
 
@@ -167,8 +166,9 @@ ordDot = ord '.'
 
 prettyScientific :: Double -> Maybe Double -> String -> String
 prettyScientific x b unit = concat $ case floatToDigits 10 <$> b of
-    Nothing -> [mantissa (take 2 $ sig ++ repeat 0), f expo, unit]
-    Just (errSig,errExpo) -> [mantissa (take (max 2 $ valLen errExpo) $ sig ++ repeat 0), showError errSig, f expo, unit]
+    Just (errSig,errExpo) | errSig /= [0] -> [mantissa (take (max 2 $ valLen errExpo) $ sig ++ repeat 0), showError errSig, f expo, unit]
+    _ | x == 0 -> ["0",unit]
+    _ -> [mantissa (take 2 $ sig ++ repeat 0), f expo, unit]
   where
 
     showError err = '(' : map (chr . (ord0+)) (take 2 $ err ++ repeat 0) ++ ")"
