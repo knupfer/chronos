@@ -3,12 +3,12 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE KindSignatures #-}
-{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE DataKinds #-}
 
 module Chronos where
 
+import Data.Function
 import Numeric
 import Numeric.Natural
 import Data.Char
@@ -26,18 +26,18 @@ type Name = String
 data Benchmark
   = Benchmark
   { name :: Name
-  , runner :: (Analysis -> IO Analysis)
+  , runner :: Analysis -> IO Analysis
   , analysis :: Analysis
   }
 
 data Analysis
   = Analysis
-  { samples :: !Natural
-  , squaredWeights :: !Natural
-  , mean :: !Rational
-  , qFactor :: !Rational
-  , stdError :: !Double
-  , information :: !Double
+  { samples :: Natural
+  , squaredWeights :: Natural
+  , mean :: Rational
+  , qFactor :: Rational
+  , stdError :: Double
+  , information :: Double
   }
 
 variance :: Analysis -> Rational
@@ -50,7 +50,7 @@ sigma = sqrt . fromRational . variance
 
 stdError' :: Analysis -> Double
 stdError' Analysis{..}
-  | samples > 1 = sqrt (fromRational (fromIntegral squaredWeights * qFactor / fromIntegral (samples - 1))) / fromIntegral samples
+  | samples > 1 = sqrt $ fromRational (fromIntegral squaredWeights * qFactor / fromIntegral (samples - 1)) / fromIntegral samples
   | otherwise = 0
 
 step :: Benchmark -> IO Benchmark
@@ -62,7 +62,7 @@ benchIO n io = Benchmark n f (Analysis 0 0 0 0 0 0)
   where
     f Analysis{..} = do
       let weight | mean == 0 = 1
-                 | otherwise = max 1 (min samples . round $ 0.1 / mean)
+                 | otherwise = max 1 (min (samples `div` 2) . round $ 0.2 / mean)
       time <- runBench weight
       let newSamples = samples + weight
           newMean = mean + fromIntegral weight * (time - mean) / fromIntegral newSamples
@@ -70,13 +70,13 @@ benchIO n io = Benchmark n f (Analysis 0 0 0 0 0 0)
           newSquaredWeights = squaredWeights + weight*weight
           new = Analysis newSamples newSquaredWeights newMean newQFactor 0 0
           newStdError = stdError' new
-          newInformation = recip $ 1/ 2^newSamples + (newStdError / fromRational newMean) / sqrt (fromIntegral newSamples)
+          newInformation = recip $ 1/ 1.5^newSamples + (newStdError / fromRational newMean) / sqrt (fromIntegral newSamples)
 
       return $ new {stdError = newStdError, information = newInformation}
 
     runBench weight = do
             begin <- getSystemTime
-            replicateM_ (fromIntegral weight) $ io
+            replicateM_ (fromIntegral weight) io
             end <- getSystemTime
             return $ (toSeconds end - toSeconds begin) / fromIntegral weight
     toSeconds t = fromIntegral (systemSeconds t) + fromIntegral (systemNanoseconds t) / 1000000000
@@ -98,24 +98,22 @@ defaultMain bs = bracket_ hideCursor showCursor $ do
     putStrLn ""
     return b'
 
-  runMain . zip [1..] $ bs'
+  putStrLn ""
+  runMain (length bs') . zip [1..] $ bs'
 
-runMain :: [(Int, Benchmark)] -> IO ()
-runMain xs = do
-  replicateM_ 3 $ putStrLn ""
-  go (1000 :: Int) xs
+runMain :: Int -> [(Int, Benchmark)] -> IO ()
+runMain len = fix (go>=>)
   where
-    go 0 _ = return ()
-    go n zs = go (n-1) . increasePrecision =<< runHead zs
+    go = fmap increasePrecision . runHead
 
     runHead [] = pure []
-    runHead ((n,u):us) = let mv = (length xs - n + 1) * 3
+    runHead ((n,u):us) = let mv = (len - n) * 3 + 1
                          in bracket_ (cursorUpLine (mv+2)) (cursorDownLine mv) $ do
       printIndicator
       u' <- step u
       printAnalysis (analysis u')
       printBar (Percentage . fromRational $ mean (analysis u') / maximum (map (mean . analysis . snd) $ (n,u'):us))
-               (Percentage $ sigma (analysis u') / fromRational (mean (analysis u')))
+               (Percentage $ sigma (analysis u') / fromRational (mean $ analysis u'))
       pure ((n,u'):us)
 
     increasePrecision = sortOn (information . analysis . snd)
@@ -123,7 +121,7 @@ runMain xs = do
 printIndicator :: IO ()
 printIndicator = do
   setSGR [SetColor Foreground Vivid Red]
-  putStr "►"
+  putChar '►'
   setSGR [Reset]
   hFlush stdout
 
@@ -152,9 +150,14 @@ instance Show Analysis where
   show a@Analysis{..}
     = concat
     [ "x=", prettyScientific (fromRational mean) (Just stdError) "s "
-    , "σ=", prettyScientific (100*sigma a/fromRational mean) Nothing "% "
-    , "n=", show samples
+    , "σ=", prettyScientific (100*sigma a/ fromRational mean) Nothing "% "
+    , "n=", showNumWithSpaces samples
     ]
+
+showNumWithSpaces :: (Show a) => a -> String
+showNumWithSpaces x = reverse . intercalate "," . go $ reverse (show x)
+  where go ds | length ds > 3 = let (a,b) = splitAt 3 ds in a : go b
+              | otherwise = [ds]
 
 ord0 :: Int
 ord0 = ord '0'
@@ -176,19 +179,24 @@ prettyScientific x b unit = concat $ case floatToDigits 10 <$> b of
     mantissa [] = ""
     f 1 = ""
     f 2 = "·10"
-    f e = "·10" ++ showE (e-1)
+    f e | e < 1 = "·10⁻" ++ map showE (digitList $ abs (e-1))
+        | otherwise = "·10" ++ map showE (digitList $ e-1)
 
-showE :: Integral a => a -> String
+digitList :: Integral a => a -> [a]
+digitList x = case divMod x 10 of
+   (0, b) -> [b]
+   (a, b) -> digitList a ++ [b]
+
+showE :: Integral a => a -> Char
 showE = \case
-  0 -> "⁰"
-  1 -> "¹"
-  2 -> "²"
-  3 -> "³"
-  4 -> "⁴"
-  5 -> "⁵"
-  6 -> "⁶"
-  7 -> "⁷"
-  8 -> "⁸"
-  9 -> "⁹"
-  n | n < 0     -> '⁻' : showE (negate n)
-    | otherwise -> (\(a, b) -> showE a ++ showE b) $ divMod n 10
+  0 -> '⁰'
+  1 -> '¹'
+  2 -> '²'
+  3 -> '³'
+  4 -> '⁴'
+  5 -> '⁵'
+  6 -> '⁶'
+  7 -> '⁷'
+  8 -> '⁸'
+  9 -> '⁹'
+  _ -> error "Only for single digts"
