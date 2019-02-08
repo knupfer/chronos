@@ -35,11 +35,9 @@ import System.Process
 
 import qualified Data.Set as S
 
-type Name = String
-
 data Benchmark
   = Benchmark
-  { name :: Name
+  { name :: String
   , runner :: Analysis -> IO Analysis
   , analysis :: Analysis
   }
@@ -157,8 +155,11 @@ refineAnalysis ana@Analysis{..} begin end = Analysis newSamples newSquaredWeight
     time = (toSeconds end - toSeconds begin) / weight
     toSeconds t = fromIntegral (systemSeconds t) + fromIntegral (systemNanoseconds t) / 1000000000
 
-benchIO :: Name -> Either (Int -> IO a) (IO a) -> Benchmark
-benchIO n io = Benchmark n f (Analysis 0 0 0 0)
+benchIO :: String -> IO a -> Benchmark
+benchIO n io = benchIO' n (Right io)
+
+benchIO' :: String -> Either (Int -> IO a) (IO a) -> Benchmark
+benchIO' n io = Benchmark n f (Analysis 0 0 0 0)
 
   where
     f ana = let w = weightOf ana in refineAnalysis ana
@@ -166,12 +167,12 @@ benchIO n io = Benchmark n f (Analysis 0 0 0 0)
        <* either (void . ($w)) (replicateM_ w) io
       <*> getSystemTime
 
-benchShell :: Name -> String -> Benchmark
-benchShell n cmd = benchIO n $ Left $ \times -> withCreateProcess (shell (intercalate ";" $ replicate times cmd)) {std_out = CreatePipe, std_err = CreatePipe} $ \_ _ _ ph ->
+benchShell :: String -> String -> Benchmark
+benchShell n cmd = benchIO' n $ Left $ \times -> withCreateProcess (shell (intercalate ";" $ replicate times cmd)) {std_out = CreatePipe, std_err = CreatePipe} $ \_ _ _ ph ->
   void $ waitForProcess ph
 
-bench :: NFData b => Name -> (a -> b) -> a -> Benchmark
-bench n f = benchIO n . Right . evaluate . force . f
+bench :: NFData b => String -> (a -> b) -> a -> Benchmark
+bench n f = benchIO n . evaluate . force . f
 
 step :: Benchmark -> IO Benchmark
 step (Benchmark n f a) = Benchmark n f <$> f a
@@ -219,7 +220,7 @@ printBar m sd = do
   putStrLn $ ' ':' ':replicate (round len) '█' ++ take 40 (replicate (round $ fromRational len * sd) '─')
   where len = m * 60
 
-printName :: Name -> IO ()
+printName :: String -> IO ()
 printName n = do
   clearLine
   setSGR [SetColor Foreground Vivid Cyan]
