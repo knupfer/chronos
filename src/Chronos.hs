@@ -8,6 +8,7 @@
 
 module Chronos where
 
+import Control.Arrow
 import Data.Function
 import Numeric
 import Numeric.Natural
@@ -21,6 +22,8 @@ import Control.Exception
 import Control.DeepSeq
 import System.Process
 
+import qualified Data.Set as S
+
 type Name = String
 
 data Benchmark
@@ -30,15 +33,26 @@ data Benchmark
   , analysis :: Analysis
   }
 
+data BenchmarkMeta
+  = BenchmarkMeta
+  { information :: Double
+  , position :: Int
+  , benchmark :: Benchmark
+  }
+
+instance Eq BenchmarkMeta where
+  (==) = (==) `on` position &&& analysis . benchmark
+
+instance Ord BenchmarkMeta where
+  compare = compare `on` information &&& position &&& analysis . benchmark
+
 data Analysis
   = Analysis
   { samples :: Natural
   , squaredWeights :: Natural
   , mean :: Rational
   , qFactor :: Rational
-  , stdError :: Double
-  , information :: Double
-  }
+  } deriving (Eq, Ord)
 
 variance :: Analysis -> Rational
 variance Analysis{..}
@@ -48,8 +62,8 @@ variance Analysis{..}
 sigma :: Analysis -> Double
 sigma = sqrt . fromRational . variance
 
-stdError' :: Analysis -> Double
-stdError' Analysis{..}
+stdError :: Analysis -> Double
+stdError Analysis{..}
   | samples > 1 = sqrt $ fromRational (fromIntegral squaredWeights * qFactor / fromIntegral (samples - 1)) / fromIntegral samples
   | otherwise = 0
 
@@ -57,7 +71,7 @@ step :: Benchmark -> IO Benchmark
 step (Benchmark n f a) = Benchmark n f <$> f a
 
 benchIO :: Name -> Either (Int -> IO a) (IO a) -> Benchmark
-benchIO n io = Benchmark n f (Analysis 0 0 0 0 0 0)
+benchIO n io = Benchmark n f (Analysis 0 0 0 0)
 
   where
     f Analysis{..} = do
@@ -68,11 +82,8 @@ benchIO n io = Benchmark n f (Analysis 0 0 0 0 0 0)
           newMean = mean + fromIntegral weight * (time - mean) / fromIntegral newSamples
           newQFactor = qFactor + fromIntegral weight * (time - mean) * (time - newMean)
           newSquaredWeights = squaredWeights + weight*weight
-          new = Analysis newSamples newSquaredWeights newMean newQFactor 0 0
-          newStdError = stdError' new
-          newInformation = recip $ 1/ 1.5^newSamples + (newStdError / fromRational newMean) / fromIntegral newSamples
 
-      return $ new {stdError = newStdError, information = newInformation}
+      return $ Analysis newSamples newSquaredWeights newMean newQFactor
 
     runBench weight = do
             begin <- getSystemTime
@@ -95,26 +106,26 @@ defaultMain bs = bracket_ hideCursor showCursor $ do
     replicateM_ 2 (putStrLn "")
 
   putStrLn ""
-  runMain (length bs) . zip [1..] $ bs
+  runMain . S.fromList $ zipWith (BenchmarkMeta 0) [1..] bs
 
-runMain :: Int -> [(Int, Benchmark)] -> IO ()
-runMain len = fix (go>=>)
+runMain :: S.Set BenchmarkMeta -> IO ()
+runMain = fix (go>=>) . (,) 0
   where
-    go = fmap increasePrecision . runHead
-
-    runHead [] = pure []
-    runHead ((n,u):us) = let mv = (len - n) * 3 + 1
-                         in bracket_ (cursorUpLine (mv+2)) (cursorDownLine mv) $ do
-      printIndicator
-      cursorDownLine (mv+2)
-      u' <- step u
-      cursorUpLine (mv+2)
-      printAnalysis (analysis u')
-      printBar (Percentage . fromRational $ mean (analysis u') / maximum (map (mean . analysis . snd) $ (n,u'):us))
-               (Percentage $ sigma (analysis u') / fromRational (mean $ analysis u'))
-      pure ((n,u'):us)
-
-    increasePrecision = sortOn (information . analysis . snd)
+    go (r,s) = case S.minView s of
+      Nothing -> pure (r,s)
+      Just (BenchmarkMeta{..}, s') ->
+            let mv = (length s - position) * 3 + 1
+            in bracket_ (cursorUpLine $ mv+2) (cursorDownLine mv) $ do
+          printIndicator
+          cursorDownLine $ mv+2
+          ana <- analysis <$> step benchmark
+          cursorUpLine $ mv+2
+          printAnalysis ana
+          let r' | r == mean (analysis benchmark) = mean ana
+                 | otherwise = max r $ mean ana
+              info = recip $ 1/ 1.5^samples ana + (stdError ana / fromRational (mean ana)) / fromIntegral (samples ana)
+          printBar (mean ana / r') $ sigma ana / fromRational (mean ana)
+          pure (r', S.insert (BenchmarkMeta info position benchmark{analysis = ana}) s')
 
 printIndicator :: IO ()
 printIndicator = do
@@ -129,12 +140,10 @@ printAnalysis ana = do
   clearLine
   putStrLn (' ':' ':result)
 
-newtype Percentage = Percentage Double deriving (RealFrac, Real, Num, Fractional, Ord, Eq)
-
-printBar :: Percentage -> Percentage -> IO ()
+printBar :: Rational -> Double -> IO ()
 printBar m sd = do
   clearLine
-  putStrLn (' ':' ':replicate (round len) '█' ++ take 40 (replicate (round (len * sd)) '─'))
+  putStrLn $ ' ':' ':replicate (round len) '█' ++ take 40 (replicate (round $ fromRational len * sd) '─')
   where len = m * 60
 
 printName :: Name -> IO ()
@@ -148,8 +157,8 @@ printName n = do
 instance Show Analysis where
   show a@Analysis{..}
     = concat
-    [ "x=", prettyScientific (fromRational mean) (Just stdError) "s "
-    , "σ=", prettyScientific (100*sigma a/ fromRational mean) Nothing "% "
+    [ "x=", prettyScientific (fromRational mean) (Just $ stdError a), "s "
+    , "σ=", prettyScientific (100*sigma a/ fromRational mean) Nothing, "% "
     , "n=", showNumWithSpaces samples
     ]
 
@@ -164,11 +173,11 @@ ord0 = ord '0'
 ordDot :: Int
 ordDot = ord '.'
 
-prettyScientific :: Double -> Maybe Double -> String -> String
-prettyScientific x b unit = concat $ case floatToDigits 10 <$> b of
-    Just (errSig,errExpo) | errSig /= [0] -> [mantissa (take (max 2 $ valLen errExpo) $ sig ++ repeat 0), showError errSig, f expo, unit]
-    _ | x == 0 -> ["0",unit]
-    _ -> [mantissa (take 2 $ sig ++ repeat 0), f expo, unit]
+prettyScientific :: Double -> Maybe Double -> String
+prettyScientific x b = case floatToDigits 10 <$> b of
+    Just (errSig,errExpo) | errSig /= [0] -> mantissa (take (max 1 $ valLen errExpo) $ sig ++ repeat 0) ++ showError errSig ++ f expo
+    _ | x == 0 -> "0"
+    _ -> mantissa (take 2 $ sig ++ repeat 0) ++ f expo
   where
 
     showError err = '(' : map (chr . (ord0+)) (take 2 $ err ++ repeat 0) ++ ")"
