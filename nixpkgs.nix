@@ -1,6 +1,6 @@
 import (
   (import <nixpkgs> {}).fetchgit {
     url    = https://github.com/NixOS/nixpkgs.git;
-    rev    = "b1e5910a7d818d4b2c4000ca1cda9905a63ba916";
-    sha256 = "17lr461b43z8570na9xq8nn8bxjfzv2nin4va9ijwg2scp5y2pv7";
+    rev    = "d18052fe3e13fb577f8a546e8e57c52bbc1e3013";
+    sha256 = "01yvzqqqqj08qamvb8a6d6sdf10jnqv4x2ar30g7zx4f6hd6zybm";
   }) {}
