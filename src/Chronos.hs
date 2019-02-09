@@ -130,7 +130,7 @@ sigma = sqrt . fromRational . variance
 
 stdError :: Analysis -> Double
 stdError ana@Analysis{..}
-  | samples > 1 = sqrt (fromIntegral squaredWeights / fromIntegral samples) * sigma ana
+  | samples > 1 = sqrt (fromIntegral squaredWeights / fromIntegral (samples*samples)) * sigma ana
   | otherwise = 0
 
 weightOf :: Num a => Analysis -> a
