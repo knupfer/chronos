@@ -66,7 +66,7 @@ data Analysis
 instance Show Analysis where
   show a@Analysis{..}
     = concat
-    [ "x=", prettyScientific (fromRational mean) (Just $ stdError a), "s "
+    [ "t=", prettyScientific (fromRational mean) (Just $ stdError a), "s "
     , "σ=", prettyScientific (100 * sigma a / fromRational mean) Nothing, "% "
     , "n=", showNumWithSpaces samples
     ]
@@ -198,7 +198,7 @@ runMain = fix (go>=>) . (,) 0
           printAnalysis ana
           let newMax | r == mean (analysis benchmark) = mean ana
                      | otherwise = max r $ mean ana
-          printBar (mean ana / newMax) $ sigma ana / fromRational (mean ana)
+          printBar (mean ana / newMax) (stdError ana / fromRational (mean ana)) $ sigma ana / fromRational (mean ana)
           pure (newMax, S.insert (BenchmarkMeta (informationOf ana) position benchmark{analysis = ana}) s')
 
 printIndicator :: IO ()
@@ -214,11 +214,24 @@ printAnalysis ana = do
   clearLine
   putStrLn (' ':' ':result)
 
-printBar :: Rational -> Double -> IO ()
-printBar m sd = do
+printBar :: Rational -> Double -> Double -> IO ()
+printBar m stdErr sd = do
   clearLine
-  putStrLn $ ' ':' ':replicate (round len) '█' ++ take 40 (replicate (round $ fromRational len * sd) '─')
-  where len = m * 60
+  setSGR [SetColor Foreground Dull Magenta]
+  putStr $ ' ':' ': replicate errorLength '▀'
+  putStr $ replicate (min sigmaLength errorSigmaLength) '▔'
+  setSGR [Reset]
+  putStr $ replicate valueLength '▀'
+  setSGR [SetColor Foreground Vivid Black]
+  putStrLn $ replicate (sigmaLength - errorSigmaLength) '▔'
+  setSGR [Reset]
+
+  where
+    len = 60
+    valueLength = round (m * len) - errorLength
+    errorLength = min (round $ m * len) . round $ stdErr * fromRational (m * len)
+    errorSigmaLength = round (stdErr * fromRational (m * len)) - errorLength
+    sigmaLength = min (round len) . round $ fromRational (m * len) * sd
 
 printName :: String -> IO ()
 printName n = do
