@@ -6,6 +6,7 @@
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE GADTs #-}
 
 module Chronos
   ( Benchmark(..)
@@ -17,13 +18,14 @@ module Chronos
   , sigma
   , stdError
   , step
-  )
-  where
+  ) where
 
+import Data.IORef
 import Data.String
 import Control.Arrow
 import Data.Function
 import Numeric
+import Numeric.Natural
 import Data.List
 import System.IO
 import Data.Time.Clock.System
@@ -34,6 +36,7 @@ import Control.Exception
 import Control.DeepSeq
 import System.Process
 import System.Console.Terminal.Size
+import System.Mem
 
 import qualified Data.Set as S
 import qualified Data.ByteString.Builder as B
@@ -41,8 +44,8 @@ import qualified Data.ByteString.Builder as B
 data Benchmark
   = Benchmark
   { name :: String
-  , runner :: Analysis -> IO Analysis
   , analysis :: Analysis
+  , runner :: Analysis -> IO Analysis
   }
 
 data BenchmarkMeta
@@ -60,8 +63,8 @@ instance Ord BenchmarkMeta where
 
 data Analysis
   = Analysis
-  { samples :: Word
-  , squaredWeights :: Word
+  { samples :: Natural
+  , squaredWeights :: Natural
   , mean :: Rational
   , qFactor :: Rational
   , variance :: Rational
@@ -87,10 +90,9 @@ runMain = fix (go>=>) . (,) 0
           let newMax | r == mean (analysis benchmark) = mean ana
                      | otherwise = max r $ mean ana
           w <- maybe 60 width <$> size
-          result <- evaluate $ renderAnalysis ana
           B.hPutBuilder stdout
             $ csi' [mv] 'F' -- cursorUpLine mv
-            <> analysisBuilder result
+            <> analysisBuilder (renderAnalysis ana)
             <> case () of
                  _ | samples ana <= 1 -> B.char7 '\n'
                    | otherwise  -> barBuilder w (mean ana / newMax) (min 1 $ sigmaLevel * stdError ana / fromRational (mean ana)) (min 1 $ sigma ana / fromRational (mean ana))
@@ -99,27 +101,42 @@ runMain = fix (go>=>) . (,) 0
       Nothing -> pure (r,s)
 
 step :: Benchmark -> IO Benchmark
-step (Benchmark n f a) = Benchmark n f <$> f a
+step (Benchmark n a f) = flip (Benchmark n) f <$> f a
 
+{-# INLINE benchIO #-}
 benchIO :: String -> IO a -> Benchmark
-benchIO n io = benchIO' n (Right io)
+benchIO label io = runComputation (Impure io) label
 
-benchIO' :: String -> Either (Int -> IO a) (IO a) -> Benchmark
-benchIO' n io = Benchmark n f (Analysis 0 0 0 0 0)
+data Computation where
+   Shell :: String -> Computation
+   Pure :: NFData b => (a -> b) -> a -> Computation
+   Impure :: IO a -> Computation
 
-  where
-    f ana = let w = fromIntegral (weightOf ana) in refineAnalysis ana
-      <$> getSystemTime
-       <* either (void . ($w)) (replicateM_ w) io
-      <*> getSystemTime
+{-# INLINE measure #-}
+measure :: (Int -> IO a) -> Analysis -> IO Analysis
+measure action ana
+  = performMinorGC
+  >> refineAnalysis ana
+  <$> getSystemTime
+  <* action (weightOf ana)
+  <*> getSystemTime
 
+{-# INLINE runComputation #-}
+runComputation :: Computation -> String -> Benchmark
+runComputation comp label = Benchmark label (Analysis 0 0 0 0 0) $ case comp of
+  Impure io -> measure (flip replicateM_ io)
+  Pure g x  -> \ana -> newIORef x >>= \io -> (measure (\n -> replicateM_ n $ (return$!) . force . g =<< readIORef io) ana)
+  Shell cmd -> measure (\n -> withCreateProcess (shell (intercalate ";" $ replicate n cmd)) {std_out = CreatePipe, std_err = CreatePipe} $ \_ _ _ -> void . waitForProcess)
+
+{-# INLINE benchShell #-}
 benchShell :: String -> String -> Benchmark
-benchShell n cmd = benchIO' n $ Left $ \times -> withCreateProcess (shell (intercalate ";" $ replicate times cmd)) {std_out = CreatePipe, std_err = CreatePipe} $ \_ _ _ ph ->
-  void $ waitForProcess ph
+benchShell label cmd = runComputation (Shell cmd) label
 
+{-# INLINE bench #-}
 bench :: NFData b => String -> (a -> b) -> a -> Benchmark
-bench n f = benchIO n . evaluate . force . f
+bench label f x = runComputation (Pure f x) label
 
+{-# INLINE renderAnalysis #-}
 renderAnalysis :: Analysis -> B.Builder
 renderAnalysis a@Analysis{..}
   = B.char7 't' <> B.char7 '='
@@ -129,13 +146,13 @@ renderAnalysis a@Analysis{..}
   <> prettyScientific (100 * sigma a / fromRational mean) Nothing
   <> B.char7 '%' <> B.char7 ' '
   <> B.char7 'n' <> B.char7 '='
-  <> prettyWord samples
+  <> prettyNatural samples
 
 sigmaLevel :: Double
 sigmaLevel = 6
 
-prettyWord :: Word -> B.Builder
-prettyWord = go
+prettyNatural :: Natural -> B.Builder
+prettyNatural = go . fromIntegral
   where
     go x = case divMod x 1000 of
              (a,b) | a == 0 -> B.wordDec b
@@ -195,16 +212,17 @@ informationOf Analysis{..}
     v = fromRational variance
     w2 = fromIntegral squaredWeights
 
-weightOf :: Analysis -> Word
-weightOf Analysis{..} = max 1 . min samples . round . recip $ sqrt (fromRational mean :: Double)
+weightOf :: Analysis -> Int
+weightOf Analysis{..} = fromIntegral . max 1 . min samples . round . recip $ sqrt (fromRational mean :: Double)
 
+{-# INLINE refineAnalysis #-}
 refineAnalysis :: Analysis -> SystemTime -> SystemTime -> Analysis
 refineAnalysis ana@Analysis{..} begin end = Analysis newSamples newSquaredWeights newMean newQFactor newVariance
 
   where
-    newSamples = samples + weightOf ana
-    newSquaredWeights = squaredWeights + weightOf ana*weightOf ana
-    newMean = mean       + diffWeight / fromIntegral newSamples
+    newSamples = samples + fromIntegral (weightOf ana)
+    newSquaredWeights = squaredWeights + fromIntegral (weightOf ana*weightOf ana)
+    newMean = mean + diffWeight / fromIntegral newSamples
     newQFactor = qFactor + diffWeight * (time - newMean)
     newVariance = newQFactor / fromIntegral newSamples
 
