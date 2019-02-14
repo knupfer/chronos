@@ -35,3 +35,12 @@ executable chronos
   hs-source-dirs:      bin
   default-language:    Haskell2010
   ghc-options:        -Wall
+
+benchmark bench
+  type:                exitcode-stdio-1.0
+  main-is:             Main.hs
+  build-depends:       chronos
+                     , base >= 4
+  hs-source-dirs:      bench
+  default-language:    Haskell2010
+  ghc-options:        -Wall
