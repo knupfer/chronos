@@ -18,6 +18,9 @@ module Chronos
   , sigma
   , stdError
   , step
+  , isEqualTo
+  , isFasterThan
+  , compareBench
   ) where
 
 import Data.IORef
@@ -148,6 +151,33 @@ renderAnalysis a@Analysis{..}
   <> B.char7 'n' <> B.char7 '='
   <> prettyNatural samples
 
+compareBench :: Double -> Benchmark -> Benchmark -> IO Ordering
+compareBench d b1 b2 | ((||) `on` ((<2) . samples . analysis)) b1 b2
+                       || ((||) `on` (\b -> mean (analysis b) * fromIntegral (samples (analysis b)) < 0.1)) b1 b2 = next
+                     | otherwise = case compareMeans (analysis b1) (analysis b2) of
+                         EQ | ((&&) `on` (relativeErrorBelow (d/2) . analysis)) b1 b2 -> pure EQ
+                            | otherwise -> next
+                         r -> pure r
+
+   where next | ((<=) `on` informationOf . analysis) b1 b2 = flip (compareBench d) b2 =<< step b1
+              | otherwise = compareBench d b1 =<< step b2
+
+relativeErrorBelow :: Double -> Analysis -> Bool
+relativeErrorBelow d a = d > sigmaLevel * stdError a / fromRational (mean a)
+
+compareMeans :: Analysis -> Analysis -> Ordering
+compareMeans a1 a2
+  | f a1 a2 = LT
+  | f a2 a1 = GT
+  | otherwise = EQ
+  where f x y = fromRational (mean x) + sigmaLevel*stdError x < fromRational (mean y) - sigmaLevel*stdError y
+
+isEqualTo :: Benchmark -> Benchmark -> IO Bool
+isEqualTo b1 b2 = (EQ==) <$> compareBench 0.01 b1 b2
+
+isFasterThan :: Benchmark -> Benchmark -> IO Bool
+isFasterThan b1 b2 = (LT==) <$> compareBench 0.01 b1 b2
+
 sigmaLevel :: Double
 sigmaLevel = 6
 
@@ -204,7 +234,8 @@ stdError Analysis{..}
 
 informationOf :: Analysis -> Double
 informationOf Analysis{..}
-  = (m*m * n*n)
+  | n == 0 = 0
+  | otherwise = (m*m * n*n*n)
   / (m*m * n + v*w2)
   where
     n = fromIntegral samples
