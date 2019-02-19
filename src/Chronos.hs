@@ -255,7 +255,8 @@ refineAnalysis ana@Analysis{..} begin end = Analysis newSamples newSquaredWeight
     newSquaredWeights = squaredWeights + fromIntegral (weightOf ana*weightOf ana)
     newMean = mean + diffWeight / fromIntegral newSamples
     newQFactor = qFactor + diffWeight * (time - newMean)
-    newVariance = newQFactor / fromIntegral newSamples
+    newVariance | newSamples > 1 = newQFactor / fromIntegral (newSamples - 1)
+                | otherwise = 0
 
     diffWeight = fromIntegral (weightOf ana) * (time - mean)
 
