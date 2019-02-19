@@ -226,7 +226,14 @@ showE = fix go
                 (a, b) -> f a <> f b
 
 sigma :: Analysis -> Double
-sigma = sqrt . fromRational . variance
+sigma Analysis{..}
+  = sqrt (fromRational variance)
+  / biasCorrection
+  where biasCorrection
+          = 1
+          - 1/(4*fromIntegral samples)
+          - 7/(32*fromIntegral samples**2)
+          - 19/(128*fromIntegral samples**3)
 
 stdError :: Analysis -> Double
 stdError a@Analysis{..}
