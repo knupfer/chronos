@@ -229,8 +229,8 @@ sigma :: Analysis -> Double
 sigma = sqrt . fromRational . variance
 
 stdError :: Analysis -> Double
-stdError Analysis{..}
-   = sqrt (fromRational $ variance * fromIntegral squaredWeights / fromIntegral (samples*samples))
+stdError a@Analysis{..}
+   = sigma a * sqrt (fromIntegral squaredWeights) / fromIntegral samples
 
 informationOf :: Analysis -> Double
 informationOf Analysis{..}
