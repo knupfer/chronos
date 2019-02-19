@@ -296,9 +296,9 @@ barBuilder width m stdErr sd =
 
   where
     middle
-      | len * stdErr >= 0.25 = sgrBuilder (SetColor Foreground Vivid Magenta) <> B.charUtf8 '▀'
+      | len * stdErr >= 0.20 = sgrBuilder (SetColor Foreground Vivid Magenta) <> B.charUtf8 '▀'
       | otherwise = mempty
-    len = fromRational m * fromIntegral width / 2 - 4
+    len = fromRational m * fromIntegral (width - 2) / 2
     valueLength = round len - errorLength
     errorLength = round $ len * stdErr
     sigmaLength = round (len * sd) - errorLength
