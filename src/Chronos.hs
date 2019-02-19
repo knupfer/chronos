@@ -103,6 +103,7 @@ runMain = fix (go>=>) . (,) 0
           pure (newMax, S.insert (BenchmarkMeta (informationOf ana) position benchmark{analysis = ana}) s')
       Nothing -> pure (r,s)
 
+{-# INLINE step #-}
 step :: Benchmark -> IO Benchmark
 step (Benchmark n a f) = flip (Benchmark n) f <$> f a
 
@@ -152,11 +153,11 @@ renderAnalysis a@Analysis{..}
   <> prettyNatural samples
 
 compareBench :: Double -> Benchmark -> Benchmark -> IO Ordering
-compareBench d b1 b2 | ((||) `on` ((<2) . samples . analysis)) b1 b2
-                       || ((||) `on` (\b -> mean (analysis b) * fromIntegral (samples (analysis b)) < 0.1)) b1 b2 = next
+compareBench d b1 b2 | ((||) `on` (<3) . samples . analysis) b1 b2
+                       || ((||) `on` (<1) . informationOf . analysis) b1 b2
+                         = next
                      | otherwise = case compareMeans (analysis b1) (analysis b2) of
-                         EQ | ((&&) `on` (relativeErrorBelow (d/2) . analysis)) b1 b2 -> pure EQ
-                            | otherwise -> next
+                         EQ | ((||) `on` (not . relativeErrorBelow (d/2) . analysis)) b1 b2 -> next
                          r -> pure r
 
    where next | ((<=) `on` informationOf . analysis) b1 b2 = flip (compareBench d) b2 =<< step b1
@@ -240,15 +241,7 @@ stdError a@Analysis{..}
    = sigma a * sqrt (fromIntegral squaredWeights) / fromIntegral samples
 
 informationOf :: Analysis -> Double
-informationOf Analysis{..}
-  | n == 0 = 0
-  | otherwise = (m*m * n*n*n)
-  / (m*m * n + v*w2)
-  where
-    n = fromIntegral samples
-    m = fromRational mean
-    v = fromRational variance
-    w2 = fromIntegral squaredWeights
+informationOf Analysis{..} = sqrt (fromRational mean) * fromIntegral samples
 
 weightOf :: Analysis -> Int
 weightOf Analysis{..} = fromIntegral . max 1 . min samples . round . recip $ sqrt (fromRational mean :: Double)
