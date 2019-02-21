@@ -13,7 +13,6 @@ module Chronos
   , step
   , isEqualTo
   , isFasterThan
-  , compareBench
   ) where
 
 import Data.IORef
@@ -91,7 +90,7 @@ renderBenchmark w maxDuration Benchmark{..}
 defaultMain :: [Benchmark] -> IO ()
 defaultMain bs = bracket_ hideCursor showCursor $
   B.hPutBuilder stdout (foldMap (nameBuilder . name) bs)
-  *> foldr1 (>=>) (replicate 10 step) (benchIO "warmup" (return ()))
+  *> warmup
   *> runMain (S.fromList $ zipWith (BenchmarkMeta 0 0) [1..] $ reverse bs)
 
 runMain :: S.Set BenchmarkMeta -> IO ()
@@ -155,18 +154,21 @@ renderAnalysis a@Analysis{..}
   <> B.char7 'n' <> B.char7 '='
   <> prettyNatural samples
 
+warmup :: IO ()
+warmup = void $ foldr1 (>=>) (replicate 10 step) (benchIO "warmup" (return ()))
+
 compareBench :: Double -> Benchmark -> Benchmark -> IO Ordering
-compareBench d b1 b2 | ((||) `on` (<3) . samples . analysis) b1 b2
-                       || ((||) `on` (<1) . informationOf . analysis) b1 b2 = next
-                     | otherwise = case compareMeans (analysis b1) (analysis b2) of
-                         EQ | ((||) `on` (not . relativeErrorBelow (d/2) . analysis)) b1 b2 -> next
-                         r -> pure r
+compareBench d x1 x2 = warmup *> fix go x1 x2
+  where go h b1 b2 | oneOf ((<3) . samples) || oneOf ((<1) . informationOf) = next
+                   | otherwise = case compareMeans (analysis b1) (analysis b2) of
+                       EQ | oneOf (relativeErrorAbove (d/2)) -> next
+                       r -> pure r
+           where next | ((<=) `on` informationOf . analysis) b1 b2 = flip h b2 =<< step b1
+                      | otherwise = h b1 =<< step b2
+                 oneOf f = f (analysis b1) || f (analysis b2)
 
-   where next | ((<=) `on` informationOf . analysis) b1 b2 = flip (compareBench d) b2 =<< step b1
-              | otherwise = compareBench d b1 =<< step b2
-
-relativeErrorBelow :: Double -> Analysis -> Bool
-relativeErrorBelow d a = d > sigmaLevel * stdError a / fromRational (mean a)
+relativeErrorAbove :: Double -> Analysis -> Bool
+relativeErrorAbove d a = d < sigmaLevel * stdError a / fromRational (mean a)
 
 compareMeans :: Analysis -> Analysis -> Ordering
 compareMeans a1 a2
