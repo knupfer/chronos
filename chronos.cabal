@@ -16,6 +16,7 @@ extra-source-files:  CHANGELOG.md
 
 library
   exposed-modules:     Chronos
+                     , Chronos.Analysis
   build-depends:       base >= 4
                      , time
                      , ansi-terminal

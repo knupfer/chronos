@@ -2,18 +2,16 @@
 {-# LANGUAGE GADTs #-}
 
 module Chronos
-  ( Benchmark(..)
-  , Analysis(..)
+  ( Benchmark
   , defaultMain
   , bench
   , benchIO
   , benchShell
-  , sigma
-  , stdError
-  , step
   , isEqualTo
   , isFasterThan
   ) where
+
+import Chronos.Analysis
 
 import Data.IORef
 import Data.String
@@ -36,13 +34,6 @@ import System.Mem
 import qualified Data.ByteString.Builder as B
 import qualified Data.Set as S
 
-data Benchmark
-  = Benchmark
-  { name :: String
-  , analysis :: Analysis
-  , runner :: Analysis -> IO Analysis
-  }
-
 data BenchmarkMeta
   = BenchmarkMeta
   { information :: Double
@@ -57,19 +48,11 @@ instance Eq BenchmarkMeta where
 instance Ord BenchmarkMeta where
   compare = compare `on` information &&& negate . position &&& analysis . benchmark
 
-data Analysis
-  = Analysis
-  { samples :: Natural
-  , squaredWeights :: Natural
-  , mean :: Rational
-  , qFactor :: Rational
-  , variance :: Rational
-  } deriving (Eq, Ord, Show, Read)
-
 data Computation where
    Shell :: String -> Computation
    Pure :: NFData b => (a -> b) -> a -> Computation
    Impure :: IO a -> Computation
+
 
 printBenchmark :: BenchmarkMeta -> IO ()
 printBenchmark b = do
@@ -105,10 +88,6 @@ runMain = fix (go>=>) . (,) 0
           printBenchmark new *> pure (newMax, S.insert new s')
 
       Nothing -> pure (md, s)
-
-{-# INLINE step #-}
-step :: Benchmark -> IO Benchmark
-step (Benchmark n a f) = flip (Benchmark n) f <$> f a
 
 {-# INLINE benchIO #-}
 benchIO :: String -> IO a -> Benchmark
@@ -216,17 +195,6 @@ showE = fix go
   where go f n | n < 0 = B.charUtf8 '⁻' <> f (abs n)
                | n < 10 = B.charUtf8 $ "⁰¹²³⁴⁵⁶⁷⁸⁹" !! fromIntegral n
                | otherwise = uncurry ((<>) `on` f) $ divMod n 10
-
-sigma :: Analysis -> Double
-sigma Analysis{..} = sqrt (fromRational variance) / biasCorrection
-  where biasCorrection
-          = 1
-          - 1/(4*fromIntegral samples)
-          - 7/(32*fromIntegral samples**2)
-          - 19/(128*fromIntegral samples**3)
-
-stdError :: Analysis -> Double
-stdError a@Analysis{..} = sigma a * sqrt (fromIntegral squaredWeights) / fromIntegral samples
 
 informationOf :: Analysis -> Double
 informationOf Analysis{..} = sqrt (fromRational mean) * fromIntegral samples
