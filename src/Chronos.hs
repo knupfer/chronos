@@ -53,7 +53,6 @@ data Computation where
    Pure :: NFData b => (a -> b) -> a -> Computation
    Impure :: IO a -> Computation
 
-
 printBenchmark :: BenchmarkMeta -> IO ()
 printBenchmark b = do
   w <- maybe 60 width <$> size
@@ -99,7 +98,7 @@ measure action ana
   = performMinorGC
   >> refineAnalysis ana
   <$> getSystemTime
-  <* action (weightOf ana)
+  <* action (fromIntegral $ weightOf ana)
   <*> getSystemTime
 
 {-# INLINE runComputation #-}
@@ -175,7 +174,7 @@ prettyNatural = go . fromIntegral
                    | otherwise -> go a <> B.char7 ',' <> B.char7 '0' <> B.char7 '0' <> B.wordDec b
 
 prettyScientific :: Double -> Maybe Double -> B.Builder
-prettyScientific x b = case floatToDigits 10 <$> b of
+prettyScientific x b = case floatToDigits 10 . min x <$> b of
     Just (errSig,errExpo) | errSig /= [0] && valLen errExpo > 0 -> mantissa (take (valLen errExpo) $ sig ++ repeat 0) <> showError errSig <> f expo
     _ | x == 0 -> B.char7 '0'
     _ -> mantissa (take 2 $ sig ++ repeat 0) <> f expo
@@ -199,7 +198,7 @@ showE = fix go
 informationOf :: Analysis -> Double
 informationOf Analysis{..} = sqrt (fromRational mean) * fromIntegral samples
 
-weightOf :: Analysis -> Int
+weightOf :: Analysis -> Natural
 weightOf Analysis{..} = fromIntegral . max 1 . min samples . round . recip $ (fromRational mean :: Double) ** 0.7
 
 {-# INLINE refineAnalysis #-}
@@ -207,8 +206,8 @@ refineAnalysis :: Analysis -> SystemTime -> SystemTime -> Analysis
 refineAnalysis ana@Analysis{..} begin end = Analysis newSamples newSquaredWeights newMean newQFactor newVariance
 
   where
-    newSamples = samples + fromIntegral (weightOf ana)
-    newSquaredWeights = squaredWeights + fromIntegral (weightOf ana*weightOf ana)
+    newSamples = samples + weightOf ana
+    newSquaredWeights = squaredWeights + weightOf ana*weightOf ana
     newMean = mean + diffWeight / fromIntegral newSamples
     newQFactor = qFactor + diffWeight * (time - newMean)
     newVariance | newSamples > 1 = newQFactor / fromIntegral (newSamples - 1)
