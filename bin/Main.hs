@@ -1,7 +1,6 @@
 module Main where
 
 import Chronos
-
 import System.Environment
 
 main :: IO ()
