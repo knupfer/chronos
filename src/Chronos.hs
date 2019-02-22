@@ -104,11 +104,11 @@ measure action ana
 {-# INLINE runComputation #-}
 runComputation :: Computation -> String -> Benchmark
 runComputation comp label = Benchmark label (Analysis 0 0 0 0 0) $ case comp of
-  Impure io -> measure (flip replicateM_ io)
-  Pure g x  -> \ana -> newIORef x >>= \io -> (measure (\n -> replicateM_ n $ (return$!) . force . g =<< readIORef io) ana)
+  Impure io -> measure (`replicateM_` io)
+  Pure g x  -> \ana -> newIORef x >>= \io -> measure (\n -> replicateM_ n $ (return$!) . force . g =<< readIORef io) ana
   Shell cmd -> measure go
-    where go n = uncurry (>>) $ (flip replicateM_ (f 10000) *** f) (n `divMod` 10000)
-          f x = withCreateProcess (shell (intercalate ";" $ replicate x cmd)) {std_out = CreatePipe, std_err = CreatePipe} $ \_ _ _ -> void . waitForProcess
+    where go n = uncurry (>>) $ ((`replicateM_` f 10000) *** f) (n `divMod` 10000)
+          f x = withCreateProcess (shell (intercalate ";" $ replicate x cmd)) {std_out = CreatePipe, std_err = CreatePipe, delegate_ctlc = True} $ \_ _ _ -> void . waitForProcess
 
 {-# INLINE benchShell #-}
 benchShell :: String -> String -> Benchmark
