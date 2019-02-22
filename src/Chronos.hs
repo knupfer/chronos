@@ -126,9 +126,9 @@ renderAnalysis a@Analysis{..}
   = B.char7 't' <> B.char7 '='
   <> prettyScientific (fromRational mean) (Just $ sigmaLevel * stdError a)
   <> B.char7 's' <> B.char7 ' '
-  <> B.charUtf8 'σ' <> B.char7 '='
+  <> (if samples == 1 then mempty else B.charUtf8 'σ' <> B.char7 '='
   <> prettyScientific (100 * sigma a / fromRational mean) Nothing
-  <> B.char7 '%' <> B.char7 ' '
+  <> B.char7 '%' <> B.char7 ' ')
   <> B.char7 'n' <> B.char7 '='
   <> prettyNatural samples
 
