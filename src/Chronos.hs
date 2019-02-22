@@ -13,6 +13,7 @@ module Chronos
 
 import Chronos.Analysis
 
+import Data.Functor
 import Data.IORef
 import Data.String
 import Control.Arrow
@@ -84,7 +85,7 @@ runMain = fix (go>=>) . (,) 0
           let newMax | md == mean (analysis benchmark) = mean ana
                      | otherwise = max md $ mean ana
               new = BenchmarkMeta (informationOf ana) newMax position benchmark{analysis = ana}
-          printBenchmark new *> pure (newMax, S.insert new s')
+          printBenchmark new $> (newMax, S.insert new s')
 
       Nothing -> pure (md, s)
 
@@ -141,7 +142,7 @@ compareBench d x1 x2 = warmup *> fix go x1 x2
                    | otherwise = case compareMeans (analysis b1) (analysis b2) of
                        EQ | oneOf (relativeErrorAbove (d/2)) -> next
                        r -> pure r
-           where next | ((<=) `on` informationOf . analysis) b1 b2 = flip h b2 =<< step b1
+           where next | ((<=) `on` informationOf . analysis) b1 b2 = (`h` b2) =<< step b1
                       | otherwise = h b1 =<< step b2
                  oneOf f = f (analysis b1) || f (analysis b2)
 
@@ -217,7 +218,7 @@ refineAnalysis ana@Analysis{..} begin end = Analysis newSamples newSquaredWeight
     toSeconds t = fromIntegral (systemSeconds t) + fromIntegral (systemNanoseconds t) / 1e9
 
 sgrBuilder :: SGR -> B.Builder
-sgrBuilder = flip csi' 'm' . sgrToCode
+sgrBuilder = (`csi'` 'm') . sgrToCode
 
 csi' :: [Int] -> Char -> B.Builder
 csi' (x:xs) b = B.char7 '\ESC' <> B.char7 '[' <> B.intDec x <> foldMap (\n -> B.char7 ';' <> B.intDec n) xs <> B.char7 b
