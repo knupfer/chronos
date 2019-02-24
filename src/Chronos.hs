@@ -2,7 +2,7 @@
 {-# LANGUAGE GADTs #-}
 
 module Chronos
-  ( Benchmark
+  ( Benchmark(..)
   , defaultMain
   , bench
   , benchIO
@@ -11,11 +11,14 @@ module Chronos
   , isFasterThan
   , defaultMainWith
   , defaultConfig
+  , sigma
+  , stdError
+  , step
+  , Analysis(..)
   , Config(..)
-  , configParser
   ) where
 
-import Chronos.Analysis
+import Parser
 
 import Control.Applicative
 import Options.Applicative
@@ -73,6 +76,41 @@ data Config
   , maxRelativeError :: Maybe Double
   }
 
+data Benchmark
+  = Benchmark
+  { name :: String
+  , analysis :: Analysis
+  , runner :: Analysis -> IO Analysis
+  }
+
+data Analysis
+  = Analysis
+  { samples :: Natural
+  , squaredWeights :: Natural
+  , mean :: Rational
+  , qFactor :: Rational
+  } deriving (Eq, Ord, Show, Read)
+
+{-# INLINE step #-}
+step :: Benchmark -> IO Benchmark
+step (Benchmark n a f) = flip (Benchmark n) f <$> f a
+
+sigma :: Analysis -> Double
+sigma a = sqrt (fromRational $ variance a) / biasCorrection
+  where biasCorrection
+          = 1
+          - 1/(4*fromIntegral (samples a))
+          - 7/(32*fromIntegral (samples a)**2)
+          - 19/(128*fromIntegral (samples a)**3)
+
+stdError :: Analysis -> Double
+stdError a | samples a == 1 = fromRational (mean a)
+           | otherwise = sigma a * sqrt (fromIntegral $ squaredWeights a) / fromIntegral (samples a)
+
+variance :: Analysis -> Rational
+variance a | samples a > 1 = qFactor a / fromIntegral (samples a - 1)
+           | otherwise = 0
+
 defaultConfig :: Config
 defaultConfig = Config
   { hideBar = False
@@ -89,36 +127,7 @@ defaultConfig = Config
 defaultMain :: [Benchmark] -> IO ()
 defaultMain bs = flip defaultMainWith bs =<< execParser opts
   where
-    opts = info (configParser <**> helper) fullDesc
-
-configParser :: Parser Config
-configParser = Config
-  <$> switch ( long "hide-bar" <> help "Hide the bar indicating relative performance." )
-  <*> switch ( long "same-line" <> help "Print the analysis on the same line as the command." )
-  <*> switch ( long "hide-details" <> help "Hide standard deviation and number of samples." )
-  <*> switch ( long "print-once" <> help "Print only once the analysis.  This is will print the analysis on timeout, maximal relative error or ctrl-c." )
-  <*> switch ( long "sort" <> help "Sort benchmarks by mean duration." )
-  <*> switch ( long "simple" <> help "Don't colorize output and don't use unicode." )
-  <*> option auto
-  ( long "confidence"
-    <> help "Factor by which the standard error will be multiplied for calculating confidence intervals (default is 6)."
-    <> value 6
-    <> metavar "DOUBLE"
-  )
-  <*> optional
-  ( option auto
-    ( long "timeout"
-      <> help "Timeout after which the program is terminated. It finishes the currently running benchmark."
-      <> metavar "DOUBLE"
-    )
-  )
-  <*> optional
-  ( option auto
-    ( long "relative-error"
-      <> help "After every benchmark has got a relative error (calculated via confidence interval) below DOUBLE the program is terminated."
-      <> metavar "DOUBLE"
-    )
-  )
+    opts = info (configParser Config <**> helper) fullDesc
 
 printBenchmark :: Config -> BenchmarkMeta -> IO ()
 printBenchmark cfg b = do
@@ -196,7 +205,7 @@ runMain cfg = printAll <=< go . (,) 0
 
     terminates set = let as = map (analysis . benchmark) $ S.toList set
       in maybe False (<= fromRational (sum $ map (uncurry (*) . (mean &&& fromIntegral . samples)) as)) (timeout cfg)
-      || maybe False (>= maximum (map (uncurry (/) . ((sigmaLevel cfg*) . stdError &&& fromRational . mean)) $ as)) (maxRelativeError cfg)
+      || maybe False (>= maximum (map (uncurry (/) . ((sigmaLevel cfg*) . stdError &&& fromRational . mean)) as)) (maxRelativeError cfg)
 
     pp n set
       | printOnce cfg = pure ()

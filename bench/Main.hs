@@ -3,13 +3,7 @@ module Main where
 import Chronos
 
 main :: IO ()
-main = defaultMain $
-  [ bench "id ()" id ()
-  , benchIO "pure ()" (pure ())
-  , bench "succ 1" succ (1::Int)
-  , bench "not True" not True
-  , bench "reverse \"abc\"" reverse "abc"
-  ] ++ map (\n -> bench ("fib " ++ show n) fib n) [1..8]
+main = defaultMain $ map (\n -> bench ("fib " ++ show n) fib n) [1..10]
 
 fib :: Int -> Int
 fib 1 = 1
