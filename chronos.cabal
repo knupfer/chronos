@@ -33,6 +33,7 @@ executable chronos
   main-is:             Main.hs
   build-depends:       chronos
                      , base >= 4
+                     , optparse-applicative
   hs-source-dirs:      bin
   default-language:    Haskell2010
   ghc-options:        -Wall
