@@ -9,6 +9,9 @@ module Chronos
   , benchShell
   , isEqualTo
   , isFasterThan
+  , defaultMainWith
+  , defaultConfig
+  , Config(..)
   ) where
 
 import Chronos.Analysis
@@ -54,40 +57,108 @@ data Computation where
    Pure :: NFData b => (a -> b) -> a -> Computation
    Impure :: IO a -> Computation
 
-printBenchmark :: BenchmarkMeta -> IO ()
-printBenchmark b = do
-  w <- maybe 60 width <$> size
-  B.hPutBuilder stdout $ csi' [3*position b-1] 'F' <> renderBenchmark w (maxDuration b) (benchmark b) <> csi' [3*position b-2] 'E'
+data Config
+  = Config
+  { hideBar :: Bool
+  , sameLine :: Bool
+  , hideDetails :: Bool
+  , printOnce :: Bool
+  , sortByMean :: Bool
+  , sigmaLevel :: Double
+  , timeout :: Maybe Double
+  , maxRelativeError :: Maybe Double
+  }
 
-renderBenchmark :: Int -> Rational -> Benchmark -> B.Builder
-renderBenchmark w maxDuration Benchmark{..}
-  = B.char7 ' '
+defaultConfig :: Config
+defaultConfig = Config
+  { hideBar = False
+  , sameLine = False
+  , hideDetails = False
+  , printOnce = False
+  , sortByMean = False
+  , sigmaLevel = 6
+  , timeout = Nothing
+  , maxRelativeError = Nothing
+  }
+
+printBenchmark :: Config -> BenchmarkMeta -> IO ()
+printBenchmark cfg b = do
+  w <- maybe 60 width <$> size
+  B.hPutBuilder stdout . mv $ renderBenchmark cfg w (maxDuration b) (benchmark b)
+  where mv x | sortByMean cfg || printOnce cfg = x
+             | otherwise = linesUp (printHeight cfg*position b) <> x <> linesDown (printHeight cfg*(position b-1))
+
+linesUp :: Int -> B.Builder
+linesUp n | n > 0 = csi' [n] 'F'
+          | n < 0 = csi' [abs n] 'E'
+          | otherwise = mempty
+
+linesDown :: Int -> B.Builder
+linesDown = linesUp . negate
+
+mUnless :: Monoid m => Bool -> m -> m
+mUnless t x = if t then mempty else x
+
+renderBenchmark :: Config -> Int -> Rational -> Benchmark -> B.Builder
+renderBenchmark cfg w maxDuration Benchmark{..}
+  = nameBuilder name
+  <> mUnless (sameLine cfg) (csi' [0] 'K' <> B.char7 '\n' <> B.char7 ' ')
   <> B.char7 ' '
-  <> renderAnalysis analysis
+  <> renderAnalysis cfg analysis
   <> csi' [0] 'K'
   <> B.char7 '\n'
-  <> if samples analysis <= 1
-  then mempty
-  else barBuilder w (mean analysis / maxDuration) (min 1 $ sigmaLevel * stdError analysis / fromRational (mean analysis)) (min 1 $ sigma analysis / fromRational (mean analysis))
+  <> mUnless (hideBar cfg)
+  ( mUnless (samples analysis <= 1)
+    ( barBuilder w (mean analysis / maxDuration) (min 1 $ sigmaLevel cfg * stdError analysis / fromRational (mean analysis)) (min 1 $ sigma analysis / fromRational (mean analysis))
+    ) <> B.char7 '\n'
+  )
 
 defaultMain :: [Benchmark] -> IO ()
-defaultMain bs = bracket_ hideCursor showCursor $
-  B.hPutBuilder stdout (foldMap (nameBuilder . name) bs)
-  *> warmup
-  *> runMain (S.fromList $ zipWith (BenchmarkMeta 0 0) [1..] $ reverse bs)
+defaultMain = defaultMainWith defaultConfig
 
-runMain :: S.Set BenchmarkMeta -> IO ()
-runMain = fix (go>=>) . (,) 0
+defaultMainWith :: Config -> [Benchmark] -> IO ()
+defaultMainWith _ [] = pure ()
+defaultMainWith cfg bs | printOnce cfg = go mempty
+                       | otherwise = bracket_ hideCursor showCursor
+                         . go . B.hPutBuilder stdout . fromString $ replicate (printHeight cfg*length bs) '\n'
+
+  where go mkSpace = hSetEcho stdin False *> mkSpace *> warmup *> runMain cfg (S.fromList . zipWith (BenchmarkMeta 0 0) [1..] $ reverse pad)
+        pad | sameLine cfg = let len = maximum (map (length . name) bs) in map (\x -> x{name = take len $ name x ++ repeat ' '}) bs
+            | otherwise = bs
+
+printHeight :: Config -> Int
+printHeight cfg = 3 - fromEnum (hideBar cfg) - fromEnum (sameLine cfg)
+
+runMain :: Config -> S.Set BenchmarkMeta -> IO ()
+runMain cfg = printAll <=< go . (,) 0
   where
-    go (md, s) = case S.minView s of
-      Just (BenchmarkMeta{..}, s') -> do
-          ana <- analysis <$> step benchmark
-          let newMax | md == mean (analysis benchmark) = mean ana
-                     | otherwise = max md $ mean ana
-              new = BenchmarkMeta (informationOf ana) newMax position benchmark{analysis = ana}
-          printBenchmark new $> (newMax, S.insert new s')
+    go (m, s) = handleJust (\e -> if e == UserInterrupt then Just s else Nothing) pure $
+        let (BenchmarkMeta{..}, s') = S.deleteFindMin s in do
+              ana <- analysis <$> step benchmark
+              let newMax | m == mean (analysis benchmark) = mean ana
+                         | otherwise = max m $ mean ana
+                  new = BenchmarkMeta (informationOf ana) newMax position benchmark{analysis = ana}
+              pp new (S.insert new s')
+              next (newMax, S.insert new s')
 
-      Nothing -> pure (md, s)
+    f | sortByMean cfg = sortOn (negate . mean . analysis . benchmark)
+      | otherwise = sortOn (negate . position)
+
+    printAll set = do
+      when (sortByMean cfg && not (printOnce cfg)) (B.hPutBuilder stdout $ linesUp (printHeight cfg*length set))
+      mapM_ (printBenchmark cfg) . f $ S.toList set
+
+    terminates set = let as = map (analysis . benchmark) $ S.toList set
+      in maybe False (<= fromRational (sum $ map (uncurry (*) . (mean &&& fromIntegral . samples)) as)) (timeout cfg)
+      || maybe False (>= maximum (map (uncurry (/) . ((sigmaLevel cfg*) . stdError &&& fromRational . mean)) $ as)) (maxRelativeError cfg)
+
+    pp n set
+      | printOnce cfg = pure ()
+      | sortByMean cfg = printAll set
+      | otherwise = printBenchmark cfg n
+
+    next (m, set) | terminates set = pure set
+                  | otherwise = go (m, set)
 
 {-# INLINE benchIO #-}
 benchIO :: String -> IO a -> Benchmark
@@ -104,7 +175,7 @@ measure action ana
 
 {-# INLINE runComputation #-}
 runComputation :: Computation -> String -> Benchmark
-runComputation comp label = Benchmark label (Analysis 0 0 0 0 0) $ case comp of
+runComputation comp label = Benchmark label (Analysis 0 0 0 0) $ case comp of
   Impure io -> measure (`replicateM_` io)
   Pure g x  -> \ana -> newIORef x >>= \io -> measure (\n -> replicateM_ n $ (return$!) . force . g =<< readIORef io) ana
   Shell cmd -> measure go
@@ -120,50 +191,46 @@ bench :: NFData b => String -> (a -> b) -> a -> Benchmark
 bench label f x = runComputation (Pure f x) label
 
 {-# INLINE renderAnalysis #-}
-renderAnalysis :: Analysis -> B.Builder
-renderAnalysis a@Analysis{..}
-  | samples == 0 = mempty
-  | otherwise
+renderAnalysis :: Config -> Analysis -> B.Builder
+renderAnalysis cfg a@Analysis{..}
   = B.char7 't' <> B.char7 '='
-  <> prettyScientific (fromRational mean) (Just $ sigmaLevel * stdError a)
-  <> B.char7 's' <> B.char7 ' '
-  <> (if samples == 1 then mempty else B.charUtf8 'σ' <> B.char7 '='
+  <> prettyScientific (fromRational mean) (Just $ sigmaLevel cfg * stdError a)
+  <> B.char7 's'
+  <> mUnless (hideDetails cfg) (B.char7 ' '
+  <> mUnless (samples == 1) (B.charUtf8 'σ' <> B.char7 '='
   <> prettyScientific (100 * sigma a / fromRational mean) Nothing
   <> B.char7 '%' <> B.char7 ' ')
   <> B.char7 'n' <> B.char7 '='
-  <> prettyNatural samples
+  <> prettyNatural samples)
 
 warmup :: IO ()
 warmup = void $ foldr1 (>=>) (replicate 10 step) (benchIO "warmup" (return ()))
 
-compareBench :: Double -> Benchmark -> Benchmark -> IO Ordering
-compareBench d x1 x2 = warmup *> fix go x1 x2
+compareBench :: Config -> Double -> Benchmark -> Benchmark -> IO Ordering
+compareBench cfg d x1 x2 = warmup *> fix go x1 x2
   where go h b1 b2 | oneOf ((<3) . samples) || oneOf ((<1) . informationOf) = next
-                   | otherwise = case compareMeans (analysis b1) (analysis b2) of
-                       EQ | oneOf (relativeErrorAbove (d/2)) -> next
+                   | otherwise = case compareMeans cfg (analysis b1) (analysis b2) of
+                       EQ | oneOf (relativeErrorAbove cfg (d/2)) -> next
                        r -> pure r
            where next | ((<=) `on` informationOf . analysis) b1 b2 = (`h` b2) =<< step b1
                       | otherwise = h b1 =<< step b2
                  oneOf f = f (analysis b1) || f (analysis b2)
 
-relativeErrorAbove :: Double -> Analysis -> Bool
-relativeErrorAbove d a = d < sigmaLevel * stdError a / fromRational (mean a)
+relativeErrorAbove :: Config -> Double -> Analysis -> Bool
+relativeErrorAbove cfg d a = d < sigmaLevel cfg * stdError a / fromRational (mean a)
 
-compareMeans :: Analysis -> Analysis -> Ordering
-compareMeans a1 a2
+compareMeans :: Config -> Analysis -> Analysis -> Ordering
+compareMeans cfg a1 a2
   | f a1 a2 = LT
   | f a2 a1 = GT
   | otherwise = EQ
-  where f x y = fromRational (mean x) + sigmaLevel*stdError x < fromRational (mean y) - sigmaLevel*stdError y
+  where f x y = fromRational (mean x) + sigmaLevel cfg*stdError x < fromRational (mean y) - sigmaLevel cfg*stdError y
 
 isEqualTo :: Benchmark -> Benchmark -> IO Bool
-isEqualTo b1 b2 = (EQ==) <$> compareBench 0.01 b1 b2
+isEqualTo b1 b2 = (EQ==) <$> compareBench defaultConfig 0.01 b1 b2
 
 isFasterThan :: Benchmark -> Benchmark -> IO Bool
-isFasterThan b1 b2 = (LT==) <$> compareBench 0.01 b1 b2
-
-sigmaLevel :: Double
-sigmaLevel = 6
+isFasterThan b1 b2 = (LT==) <$> compareBench defaultConfig 0.01 b1 b2
 
 prettyNatural :: Natural -> B.Builder
 prettyNatural = go . fromIntegral
@@ -197,22 +264,19 @@ showE = fix go
                | otherwise = uncurry ((<>) `on` f) $ divMod n 10
 
 informationOf :: Analysis -> Double
-informationOf Analysis{..} = sqrt (fromRational mean) * fromIntegral samples
+informationOf Analysis{..} = fromRational mean ** 0.7 * fromIntegral samples
 
 weightOf :: Analysis -> Natural
 weightOf Analysis{..} = fromIntegral . max 1 . min samples . round . recip $ (fromRational mean :: Double) ** 0.7
 
 {-# INLINE refineAnalysis #-}
 refineAnalysis :: Analysis -> SystemTime -> SystemTime -> Analysis
-refineAnalysis ana@Analysis{..} begin end = Analysis newSamples newSquaredWeights newMean newQFactor newVariance
-
+refineAnalysis ana@Analysis{..} begin end = Analysis newSamples newSquaredWeights newMean newQFactor
   where
     newSamples = samples + weightOf ana
     newSquaredWeights = squaredWeights + weightOf ana*weightOf ana
     newMean = mean + diffWeight / fromIntegral newSamples
     newQFactor = qFactor + diffWeight * (time - newMean)
-    newVariance | newSamples > 1 = newQFactor / fromIntegral (newSamples - 1)
-                | otherwise = 0
     diffWeight = fromIntegral (weightOf ana) * (time - mean)
     time = (toSeconds end - toSeconds begin) / fromIntegral (weightOf ana)
     toSeconds t = fromIntegral (systemSeconds t) + fromIntegral (systemNanoseconds t) / 1e9
@@ -251,4 +315,3 @@ nameBuilder n =
   sgrBuilder (SetColor Foreground Vivid Cyan)
   <> fromString n
   <> sgrBuilder Reset
-  <> fromString "\n\n\n"
