@@ -27,7 +27,7 @@ import Data.List
 import System.IO
 import Data.Time.Clock.System
 import Control.Monad
-import System.Console.ANSI
+import System.Console.ANSI hiding (clearLine)
 import System.Console.ANSI.Codes
 import Control.Exception
 import Control.DeepSeq
@@ -64,6 +64,7 @@ data Config
   , hideDetails :: Bool
   , printOnce :: Bool
   , sortByMean :: Bool
+  , simple :: Bool
   , sigmaLevel :: Double
   , timeout :: Maybe Double
   , maxRelativeError :: Maybe Double
@@ -76,6 +77,7 @@ defaultConfig = Config
   , hideDetails = False
   , printOnce = False
   , sortByMean = False
+  , simple = False
   , sigmaLevel = 6
   , timeout = Nothing
   , maxRelativeError = Nothing
@@ -96,20 +98,30 @@ linesUp n | n > 0 = csi' [n] 'F'
 linesDown :: Int -> B.Builder
 linesDown = linesUp . negate
 
+clearLine :: Config -> B.Builder
+clearLine cfg | printOnce cfg = mempty
+              | otherwise = csi' [0] 'K'
+
 mUnless :: Monoid m => Bool -> m -> m
-mUnless t x = if t then mempty else x
+mUnless t = mWhen (not t)
+
+mWhen :: Monoid m => Bool -> m -> m
+mWhen t x = if t then x else mempty
 
 renderBenchmark :: Config -> Int -> Rational -> Benchmark -> B.Builder
 renderBenchmark cfg w maxDuration Benchmark{..}
-  = nameBuilder name
-  <> mUnless (sameLine cfg) (csi' [0] 'K' <> B.char7 '\n' <> B.char7 ' ')
+  = mUnless (simple cfg) (sgrBuilder (SetColor Foreground Vivid Cyan))
+  <> fromString name
+  <> mUnless (simple cfg) (sgrBuilder Reset)
+  <> mUnless (sameLine cfg) (clearLine cfg <> B.char7 '\n' <> B.char7 ' ')
   <> B.char7 ' '
   <> renderAnalysis cfg analysis
-  <> csi' [0] 'K'
+  <> clearLine cfg
   <> B.char7 '\n'
   <> mUnless (hideBar cfg)
   ( mUnless (samples analysis <= 1)
-    ( barBuilder w (mean analysis / maxDuration) (min 1 $ sigmaLevel cfg * stdError analysis / fromRational (mean analysis)) (min 1 $ sigma analysis / fromRational (mean analysis))
+    ( barBuilder cfg w (mean analysis / maxDuration) (min 1 $ sigmaLevel cfg * stdError analysis / fromRational (mean analysis)) (min 1 $ sigma analysis / fromRational (mean analysis))
+      <> clearLine cfg
     ) <> B.char7 '\n'
   )
 
@@ -194,14 +206,19 @@ bench label f x = runComputation (Pure f x) label
 renderAnalysis :: Config -> Analysis -> B.Builder
 renderAnalysis cfg a@Analysis{..}
   = B.char7 't' <> B.char7 '='
-  <> prettyScientific (fromRational mean) (Just $ sigmaLevel cfg * stdError a)
+  <> prettyScientific (simple cfg) (fromRational mean) (Just $ sigmaLevel cfg * stdError a)
   <> B.char7 's'
-  <> mUnless (hideDetails cfg) (B.char7 ' '
-  <> mUnless (samples == 1) (B.charUtf8 'σ' <> B.char7 '='
-  <> prettyScientific (100 * sigma a / fromRational mean) Nothing
-  <> B.char7 '%' <> B.char7 ' ')
-  <> B.char7 'n' <> B.char7 '='
-  <> prettyNatural samples)
+  <> mUnless (hideDetails cfg)
+  ( B.char7 ' '
+    <> mUnless (samples == 1)
+    ( (if simple cfg then fromString "SD" else B.charUtf8 'σ')
+      <> B.char7 '='
+      <> prettyScientific (simple cfg) (100 * sigma a / fromRational mean) Nothing
+      <> B.char7 '%' <> B.char7 ' '
+    )
+    <> B.char7 'n' <> B.char7 '='
+    <> prettyNatural samples
+  )
 
 warmup :: IO ()
 warmup = void $ foldr1 (>=>) (replicate 10 step) (benchIO "warmup" (return ()))
@@ -241,8 +258,8 @@ prettyNatural = go . fromIntegral
                    | b >  9 -> go a <> B.char7 ',' <> B.char7 '0' <> B.wordDec b
                    | otherwise -> go a <> B.char7 ',' <> B.char7 '0' <> B.char7 '0' <> B.wordDec b
 
-prettyScientific :: Double -> Maybe Double -> B.Builder
-prettyScientific x b = case floatToDigits 10 . min x <$> b of
+prettyScientific :: Bool -> Double -> Maybe Double -> B.Builder
+prettyScientific ascii x b = case floatToDigits 10 . min x <$> b of
     Just (errSig,errExpo) | errSig /= [0] && valLen errExpo > 0 -> mantissa (take (valLen errExpo) $ sig ++ repeat 0) <> showError errSig <> f expo
     _ | x == 0 -> B.char7 '0'
     _ -> mantissa (take 2 $ sig ++ repeat 0) <> f expo
@@ -254,8 +271,8 @@ prettyScientific x b = case floatToDigits 10 . min x <$> b of
     mantissa (d:ds) = B.intDec d <> B.char7 '.' <> foldMap B.intDec ds
     mantissa [] = mempty
     f 1 = mempty
-    f 2 = B.charUtf8 '·' <> B.intDec 10
-    f e = B.charUtf8 '·' <> B.intDec 10 <> showE (e-1)
+    f e | ascii = B.char7 '*' <> B.intDec 10 <> mWhen (e/=2) (B.char7 '^' <> B.intDec (e-1))
+        | otherwise = B.charUtf8 '·' <> B.intDec 10 <> mWhen (e/=2) (showE (e-1))
 
 showE :: Integral a => a -> B.Builder
 showE = fix go
@@ -288,30 +305,28 @@ csi' :: [Int] -> Char -> B.Builder
 csi' (x:xs) b = B.char7 '\ESC' <> B.char7 '[' <> B.intDec x <> foldMap (\n -> B.char7 ';' <> B.intDec n) xs <> B.char7 b
 csi' [] b = B.char7 '\ESC' <> B.char7 '[' <> B.char7 b
 
-barBuilder :: Int -> Rational -> Double -> Double -> B.Builder
-barBuilder width m stdErr sd =
+barBuilder :: Config -> Int -> Rational -> Double -> Double -> B.Builder
+barBuilder cfg width m stdErr sd | simple cfg =
+  B.char7 ' ' <> B.char7 ' ' <> B.string7 (replicate (pred valueLength) '=')
+  <> B.string7 (replicate errorLength '<')
+  <> mWhen (len * stdErr >= 0.20) (B.char7 '+')
+  <> B.string7 (replicate errorLength '>')
+  <> B.string7 (replicate sigmaLength '-')
+                                 | otherwise =
   B.char7 ' ' <> B.char7 ' ' <> B.stringUtf8 (replicate (pred valueLength) '▀')
   <> sgrBuilder (SetColor Foreground Dull Magenta)
   <> B.stringUtf8 (replicate errorLength '▀')
-  <> middle
+  <> mWhen (len * stdErr >= 0.20)
+           (sgrBuilder (SetColor Foreground Vivid Magenta) <> B.charUtf8 '▀')
   <> sgrBuilder (SetColor Foreground Dull Magenta)
   <> B.stringUtf8 (replicate errorLength '▀')
   <> sgrBuilder (SetColor Foreground Vivid Black)
   <> B.stringUtf8 (replicate sigmaLength '▔')
   <> sgrBuilder Reset
-  <> csi' [0] 'K' -- clearLine
 
   where
-    middle
-      | len * stdErr >= 0.20 = sgrBuilder (SetColor Foreground Vivid Magenta) <> B.charUtf8 '▀'
-      | otherwise = mempty
+
     len = fromRational m * fromIntegral (width - 6) / 2
     valueLength = round len - errorLength
     errorLength = round $ len * stdErr
     sigmaLength = round (len * sd) - errorLength
-
-nameBuilder :: String -> B.Builder
-nameBuilder n =
-  sgrBuilder (SetColor Foreground Vivid Cyan)
-  <> fromString n
-  <> sgrBuilder Reset

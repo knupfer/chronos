@@ -27,6 +27,7 @@ config = Config
   <*> switch ( long "hide-details" <> help "Hide standard deviation and number of samples." )
   <*> switch ( long "print-once" <> help "Print only once the analysis.  This is will print the analysis on timeout, maximal relative error or ctrl-c." )
   <*> switch ( long "sort" <> help "Sort benchmarks by mean duration." )
+  <*> switch ( long "simple" <> help "Don't colorize output and don't use unicode." )
   <*> option auto
   ( long "confidence"
     <> help "Factor by which the standard error will be multiplied for calculating confidence intervals (default is 6)."
