@@ -21,7 +21,6 @@ data Analysis
   , squaredWeights :: Natural
   , mean :: Rational
   , qFactor :: Rational
-  , variance :: Rational
   } deriving (Eq, Ord, Show, Read)
 
 {-# INLINE step #-}
@@ -37,4 +36,9 @@ sigma a = sqrt (fromRational $ variance a) / biasCorrection
           - 19/(128*fromIntegral (samples a)**3)
 
 stdError :: Analysis -> Double
-stdError a = sigma a * sqrt (fromIntegral $ squaredWeights a) / fromIntegral (samples a)
+stdError a | samples a == 1 = fromRational (mean a)
+           | otherwise = sigma a * sqrt (fromIntegral $ squaredWeights a) / fromIntegral (samples a)
+
+variance :: Analysis -> Rational
+variance a | samples a > 1 = qFactor a / fromIntegral (samples a - 1)
+           | otherwise = 0
