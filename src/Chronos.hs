@@ -1,5 +1,4 @@
 {-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE GADTs #-}
 
 module Chronos
   ( Benchmark(..)
@@ -57,11 +56,6 @@ instance Eq BenchmarkMeta where
 
 instance Ord BenchmarkMeta where
   compare = compare `on` information &&& negate . position &&& analysis . benchmark
-
-data Computation where
-   Shell :: String -> Computation
-   Pure :: NFData b => (a -> b) -> a -> Computation
-   Impure :: IO a -> Computation
 
 data Config
   = Config
@@ -156,7 +150,7 @@ mWhen t x = if t then x else mempty
 
 renderBenchmark :: Config -> Int -> Rational -> Benchmark -> B.Builder
 renderBenchmark cfg w maxDuration Benchmark{..}
-  = mUnless (simple cfg) (sgrBuilder (SetColor Foreground Vivid Cyan))
+  = mUnless (simple cfg) (sgrBuilder $ SetColor Foreground Vivid Cyan)
   <> fromString name
   <> mUnless (simple cfg) (sgrBuilder Reset)
   <> mUnless (sameLine cfg) (clearLine cfg <> B.char7 '\n' <> B.char7 ' ')
@@ -173,7 +167,7 @@ renderBenchmark cfg w maxDuration Benchmark{..}
 
 defaultMainWith :: Config -> [Benchmark] -> IO ()
 defaultMainWith _ [] = pure ()
-defaultMainWith cfg bs | printOnce cfg = go mempty
+defaultMainWith cfg bs | printOnce cfg = go (pure ())
                        | otherwise = bracket_ hideCursor showCursor
                          . go . B.hPutBuilder stdout . fromString $ replicate (printHeight cfg*length bs) '\n'
 
@@ -193,14 +187,18 @@ runMain cfg = printAll <=< go . (,) 0
               let newMax | m == mean (analysis benchmark) = mean ana
                          | otherwise = max m $ mean ana
                   new = BenchmarkMeta (informationOf ana) newMax position benchmark{analysis = ana}
-              pp new (S.insert new s')
-              next (newMax, S.insert new s')
+                  set = S.insert new s'
+              mask_ $ pp new set
+
+              if terminates set
+                 then pure set
+                 else go (newMax, set)
 
     f | sortByMean cfg = sortOn (negate . mean . analysis . benchmark)
       | otherwise = sortOn (negate . position)
 
     printAll set = do
-      when (sortByMean cfg && not (printOnce cfg)) (B.hPutBuilder stdout $ linesUp (printHeight cfg*length set))
+      when (sortByMean cfg && not (printOnce cfg)) . B.hPutBuilder stdout . linesUp $ printHeight cfg*length set
       mapM_ (printBenchmark cfg) . f $ S.toList set
 
     terminates set = let as = map (analysis . benchmark) $ S.toList set
@@ -212,13 +210,6 @@ runMain cfg = printAll <=< go . (,) 0
       | sortByMean cfg = printAll set
       | otherwise = printBenchmark cfg n
 
-    next (m, set) | terminates set = pure set
-                  | otherwise = go (m, set)
-
-{-# INLINE benchIO #-}
-benchIO :: String -> IO a -> Benchmark
-benchIO label io = runComputation (Impure io) label
-
 {-# INLINE measure #-}
 measure :: (Int -> IO a) -> Analysis -> IO Analysis
 measure cmd ana
@@ -228,22 +219,19 @@ measure cmd ana
   <* cmd (fromIntegral $ weightOf ana)
   <*> getSystemTime
 
-{-# INLINE runComputation #-}
-runComputation :: Computation -> String -> Benchmark
-runComputation comp label = Benchmark label (Analysis 0 0 0 0) $ case comp of
-  Impure io -> measure (`replicateM_` io)
-  Pure g x  -> \ana -> newIORef x >>= \io -> measure (\n -> replicateM_ n $ (return$!) . force . g =<< readIORef io) ana
-  Shell cmd -> measure go
-    where go n = uncurry (>>) $ ((`replicateM_` f 10000) *** f) (n `divMod` 10000)
-          f x = withCreateProcess (shell (intercalate ";" $ replicate x cmd)) {std_out = CreatePipe, std_err = CreatePipe, delegate_ctlc = True} $ \_ _ _ -> void . waitForProcess
-
-{-# INLINE benchShell #-}
-benchShell :: String -> String -> Benchmark
-benchShell label cmd = runComputation (Shell cmd) label
+{-# INLINE benchIO #-}
+benchIO :: String -> IO a -> Benchmark
+benchIO label io = Benchmark label (Analysis 0 0 0 0) (measure (`replicateM_` io))
 
 {-# INLINE bench #-}
 bench :: NFData b => String -> (a -> b) -> a -> Benchmark
-bench label f x = runComputation (Pure f x) label
+bench label f x = Benchmark label (Analysis 0 0 0 0) $ \ana -> newIORef x >>= \io -> measure (\n -> replicateM_ n $ (return$!) . force . f =<< readIORef io) ana
+
+{-# INLINE benchShell #-}
+benchShell :: String -> String -> Benchmark
+benchShell label cmd = Benchmark label (Analysis 0 0 0 0) $ measure go
+    where go n = uncurry (>>) $ ((`replicateM_` f 10000) *** f) (n `divMod` 10000)
+          f x = withCreateProcess (shell (intercalate ";" $ replicate x cmd)) {std_out = CreatePipe, std_err = CreatePipe, delegate_ctlc = True} $ \_ _ _ -> void . waitForProcess
 
 {-# INLINE renderAnalysis #-}
 renderAnalysis :: Config -> Analysis -> B.Builder
@@ -264,7 +252,7 @@ renderAnalysis cfg a@Analysis{..}
   )
 
 warmup :: IO ()
-warmup = void $ foldr1 (>=>) (replicate 10 step) (benchIO "warmup" (return ()))
+warmup = void . foldr1 (>=>) (replicate 10 step) . benchIO "warmup" $ pure ()
 
 compareBench :: Config -> Double -> Benchmark -> Benchmark -> IO Ordering
 compareBench cfg d x1 x2 = warmup *> fix go x1 x2
