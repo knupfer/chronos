@@ -10,8 +10,9 @@ module Chronos
   , Config(..)
   , isEqualTo
   , isFasterThan
-  , sigma
-  , stdError
+  , standardDeviation
+  , standardError
+  , variance
   , step
   , Benchmark(..)
   , Analysis(..)
@@ -57,6 +58,7 @@ instance Eq BenchmarkMeta where
 instance Ord BenchmarkMeta where
   compare = compare `on` information &&& negate . position &&& analysis . benchmark
 
+-- | Options wich can be specified on the command line or with defaultMainWith.
 data Config
   = Config
   { hideBar :: Bool
@@ -65,11 +67,12 @@ data Config
   , printOnce :: Bool
   , sortByMean :: Bool
   , simple :: Bool
-  , sigmaLevel :: Double
+  , confidence :: Double
   , timeout :: Maybe Double
-  , maxRelativeError :: Maybe Double
-  }
+  , relativeError :: Maybe Double
+  } deriving (Show, Read, Eq, Ord)
 
+-- | Name, current analysis and function of a benchmark.
 data Benchmark
   = Benchmark
   { name :: String
@@ -77,6 +80,7 @@ data Benchmark
   , runner :: Analysis -> IO Analysis
   }
 
+-- | Collected data from benchmark runs.
 data Analysis
   = Analysis
   { samples :: Natural
@@ -85,26 +89,54 @@ data Analysis
   , qFactor :: Rational
   } deriving (Eq, Ord, Show, Read)
 
-{-# INLINE step #-}
-step :: Benchmark -> IO Benchmark
-step (Benchmark n a f) = flip (Benchmark n) f <$> f a
+-- | Main function for running a list of benchmarks.  It also allows
+-- to specify via commandline options.
+--
+-- > defaultMain [bench "not True" not True, bench "id True" id True]
+defaultMain :: [Benchmark] -> IO ()
+defaultMain bs = flip defaultMainWith bs =<< execParser opts
+  where
+    opts = info (configParser Config <**> helper) fullDesc
 
-sigma :: Analysis -> Double
-sigma a = sqrt (fromRational $ variance a) / biasCorrection
-  where biasCorrection
-          = 1
-          - 1/(4*fromIntegral (samples a))
-          - 7/(32*fromIntegral (samples a)**2)
-          - 19/(128*fromIntegral (samples a)**3)
+-- | Construct a benchmark of a name, a pure function and an argument.
+--
+-- > bench "reverse abc" reverse "abc"
+{-# INLINE bench #-}
+bench :: NFData b => String -> (a -> b) -> a -> Benchmark
+bench label f x = Benchmark label (Analysis 0 0 0 0) $ \ana -> newIORef x >>= \io -> measure (\n -> replicateM_ n $ (return$!) . force . f =<< readIORef io) ana
 
-stdError :: Analysis -> Double
-stdError a | samples a == 1 = fromRational (mean a)
-           | otherwise = sigma a * sqrt (fromIntegral $ squaredWeights a) / fromIntegral (samples a)
+-- | Construct a benchmark of a name and an impure function.
+--
+-- > benchIO "ioref" (newIORef () >>= readIORef)
+{-# INLINE benchIO #-}
+benchIO :: String -> IO a -> Benchmark
+benchIO label io = Benchmark label (Analysis 0 0 0 0) (measure (`replicateM_` io))
 
-variance :: Analysis -> Rational
-variance a | samples a > 1 = qFactor a / fromIntegral (samples a - 1)
-           | otherwise = 0
+-- | Construct a benchmark of a name and a shell command.
+--
+-- > benchShell "sleep is slow" "sleep 0"
+{-# INLINE benchShell #-}
+benchShell :: String -> String -> Benchmark
+benchShell label cmd = Benchmark label (Analysis 0 0 0 0) $ measure go
+    where go n = uncurry (>>) $ ((`replicateM_` f 10000) *** f) (n `divMod` 10000)
+          f x = withCreateProcess (shell (intercalate ";" $ replicate x cmd)) {std_out = CreatePipe, std_err = CreatePipe} $ \_ _ _ p ->
+            waitForProcess p >> threadDelay 0 -- this is needed to let UserInterrupt be handled
 
+-- | Configurable main function for running a list of benchmarks.
+--
+-- > defaultMainWith defaultConfig {hideBar = True} [bench "id ()" id ()]
+defaultMainWith :: Config -> [Benchmark] -> IO ()
+defaultMainWith _ [] = pure ()
+defaultMainWith cfg bs | printOnce cfg = go (pure ())
+                       | otherwise = bracket_ hideCursor showCursor
+                         . go . B.hPutBuilder stdout . fromString $ replicate (printHeight cfg*length bs) '\n'
+
+  where go mkSpace = hSetEcho stdin False *> mkSpace *> warmup *> runMain cfg (S.fromList . zipWith (BenchmarkMeta 0 0) [1..] $ reverse pad)
+        pad | sameLine cfg = let len = maximum (map (length . name) bs) in map (\x -> x{name = take len $ name x ++ repeat ' '}) bs
+            | otherwise = bs
+
+-- | Default configuration.  Use this combined with record updates to
+-- ensure compatibility with future releases.
 defaultConfig :: Config
 defaultConfig = Config
   { hideBar = False
@@ -113,15 +145,60 @@ defaultConfig = Config
   , printOnce = False
   , sortByMean = False
   , simple = False
-  , sigmaLevel = 6
+  , confidence = 6
   , timeout = Nothing
-  , maxRelativeError = Nothing
+  , relativeError = Nothing
   }
 
-defaultMain :: [Benchmark] -> IO ()
-defaultMain bs = flip defaultMainWith bs =<< execParser opts
-  where
-    opts = info (configParser Config <**> helper) fullDesc
+-- | Determine whether two benchmarks have got the same performance.
+-- It runs each benchmark until their confidence intervals don't
+-- overlap - in which case False is returned - or are no bigger than
+-- 1% of the mean - in which case True is returned.
+--
+-- This function is meant to be used in test suites as infix function.
+--
+-- > benchShell "echo" "echo" `isEqualTo` benchShell "sleep 0" "sleep 0"
+isEqualTo :: Benchmark -> Benchmark -> IO Bool
+isEqualTo b1 b2 = (EQ==) <$> compareBench defaultConfig 0.01 b1 b2
+
+-- | Determine whether a benchmark is faster than another. It runs
+-- each benchmark until their confidence intervals don't overlap or
+-- are no bigger than 1% of the mean. If the confidence intervals
+-- don't overlap and the mean of the first is lower True will be
+-- returned.  Otherwise False.
+--
+-- This function is meant to be used in test suites as infix function.
+--
+-- > benchShell "echo" "echo" `isFasterThan` benchShell "sleep 0" "sleep 0"
+isFasterThan :: Benchmark -> Benchmark -> IO Bool
+isFasterThan b1 b2 = (LT==) <$> compareBench defaultConfig 0.01 b1 b2
+
+-- | Calculate the standard deviation of an Analysis.
+standardDeviation :: Analysis -> Double
+standardDeviation a = sqrt (fromRational $ variance a) / biasCorrection
+  where biasCorrection
+          = 1
+          - 1/(4*fromIntegral (samples a))
+          - 7/(32*fromIntegral (samples a)**2)
+          - 19/(128*fromIntegral (samples a)**3)
+
+-- | Calculate the standard error of an Analysis.
+standardError :: Analysis -> Double
+standardError a | samples a == 1 = fromRational (mean a)
+           | otherwise = standardDeviation a * sqrt (fromIntegral $ squaredWeights a) / fromIntegral (samples a)
+
+-- | Calculate the variance of an Analysis.
+variance :: Analysis -> Rational
+variance a | samples a > 1 = qFactor a / fromIntegral (samples a - 1)
+           | otherwise = 0
+
+-- | Run the benchmark once and update its analysis.  For functions
+-- with very low runtimes multiple runs will be executed.
+{-# INLINE step #-}
+step :: Benchmark -> IO Benchmark
+step (Benchmark n a f) = flip (Benchmark n) f <$> f a
+
+-- * Internal functions.
 
 printBenchmark :: Config -> BenchmarkMeta -> IO ()
 printBenchmark cfg b = do
@@ -160,20 +237,10 @@ renderBenchmark cfg w maxDuration Benchmark{..}
   <> B.char7 '\n'
   <> mUnless (hideBar cfg)
   ( mUnless (samples analysis <= 1)
-    ( barBuilder cfg w (mean analysis / maxDuration) (min 1 $ sigmaLevel cfg * stdError analysis / fromRational (mean analysis)) (min 1 $ sigma analysis / fromRational (mean analysis))
+    ( barBuilder cfg w (mean analysis / maxDuration) (min 1 $ confidence cfg * standardError analysis / fromRational (mean analysis)) (min 1 $ standardDeviation analysis / fromRational (mean analysis))
       <> clear cfg
     ) <> B.char7 '\n'
   )
-
-defaultMainWith :: Config -> [Benchmark] -> IO ()
-defaultMainWith _ [] = pure ()
-defaultMainWith cfg bs | printOnce cfg = go (pure ())
-                       | otherwise = bracket_ hideCursor showCursor
-                         . go . B.hPutBuilder stdout . fromString $ replicate (printHeight cfg*length bs) '\n'
-
-  where go mkSpace = hSetEcho stdin False *> mkSpace *> warmup *> runMain cfg (S.fromList . zipWith (BenchmarkMeta 0 0) [1..] $ reverse pad)
-        pad | sameLine cfg = let len = maximum (map (length . name) bs) in map (\x -> x{name = take len $ name x ++ repeat ' '}) bs
-            | otherwise = bs
 
 printHeight :: Config -> Int
 printHeight cfg = 3 - fromEnum (hideBar cfg) - fromEnum (sameLine cfg)
@@ -203,7 +270,7 @@ runMain cfg = printAll <=< go . (,) 0
 
     terminates set = let as = map (analysis . benchmark) $ S.toList set
       in maybe False (<= fromRational (sum $ map (uncurry (*) . (mean &&& fromIntegral . samples)) as)) (timeout cfg)
-      || maybe False (>= maximum (map (uncurry (/) . ((sigmaLevel cfg*) . stdError &&& fromRational . mean)) as)) (maxRelativeError cfg)
+      || maybe False (>= maximum (map (uncurry (/) . ((confidence cfg*) . standardError &&& fromRational . mean)) as)) (relativeError cfg)
 
     pp n set
       | printOnce cfg = pure ()
@@ -219,33 +286,18 @@ measure cmd ana
   <* cmd (fromIntegral $ weightOf ana)
   <*> getSystemTime
 
-{-# INLINE benchIO #-}
-benchIO :: String -> IO a -> Benchmark
-benchIO label io = Benchmark label (Analysis 0 0 0 0) (measure (`replicateM_` io))
-
-{-# INLINE bench #-}
-bench :: NFData b => String -> (a -> b) -> a -> Benchmark
-bench label f x = Benchmark label (Analysis 0 0 0 0) $ \ana -> newIORef x >>= \io -> measure (\n -> replicateM_ n $ (return$!) . force . f =<< readIORef io) ana
-
-{-# INLINE benchShell #-}
-benchShell :: String -> String -> Benchmark
-benchShell label cmd = Benchmark label (Analysis 0 0 0 0) $ measure go
-    where go n = uncurry (>>) $ ((`replicateM_` f 10000) *** f) (n `divMod` 10000)
-          f x = withCreateProcess (shell (intercalate ";" $ replicate x cmd)) {std_out = CreatePipe, std_err = CreatePipe} $ \_ _ _ p ->
-            waitForProcess p >> threadDelay 0 -- this is needed to let UserInterrupt be handled
-
 {-# INLINE renderAnalysis #-}
 renderAnalysis :: Config -> Analysis -> B.Builder
 renderAnalysis cfg a@Analysis{..}
   = mUnless (samples == 0) $ B.char7 't' <> B.char7 '='
-  <> prettyScientific (simple cfg) (fromRational mean) (Just $ sigmaLevel cfg * stdError a)
+  <> prettyScientific (simple cfg) (fromRational mean) (Just $ confidence cfg * standardError a)
   <> B.char7 's'
   <> mUnless (hideDetails cfg)
   ( B.char7 ' '
     <> mUnless (samples <= 1)
     ( (if simple cfg then fromString "SD" else B.charUtf8 'σ')
       <> B.char7 '='
-      <> prettyScientific (simple cfg) (100 * sigma a / fromRational mean) Nothing
+      <> prettyScientific (simple cfg) (100 * standardDeviation a / fromRational mean) Nothing
       <> B.char7 '%' <> B.char7 ' '
     )
     <> B.char7 'n' <> B.char7 '='
@@ -266,20 +318,14 @@ compareBench cfg d x1 x2 = warmup *> fix go x1 x2
                  oneOf f = f (analysis b1) || f (analysis b2)
 
 relativeErrorAbove :: Config -> Double -> Analysis -> Bool
-relativeErrorAbove cfg d a = d < sigmaLevel cfg * stdError a / fromRational (mean a)
+relativeErrorAbove cfg d a = d < confidence cfg * standardError a / fromRational (mean a)
 
 compareMeans :: Config -> Analysis -> Analysis -> Ordering
 compareMeans cfg a1 a2
   | f a1 a2 = LT
   | f a2 a1 = GT
   | otherwise = EQ
-  where f x y = fromRational (mean x) + sigmaLevel cfg*stdError x < fromRational (mean y) - sigmaLevel cfg*stdError y
-
-isEqualTo :: Benchmark -> Benchmark -> IO Bool
-isEqualTo b1 b2 = (EQ==) <$> compareBench defaultConfig 0.01 b1 b2
-
-isFasterThan :: Benchmark -> Benchmark -> IO Bool
-isFasterThan b1 b2 = (LT==) <$> compareBench defaultConfig 0.01 b1 b2
+  where f x y = fromRational (mean x) + confidence cfg*standardError x < fromRational (mean y) - confidence cfg*standardError y
 
 prettyNatural :: Natural -> B.Builder
 prettyNatural = go . fromIntegral
