@@ -1,45 +1,45 @@
 {-# LANGUAGE RecordWildCards #-}
 
 module Chronos
-  ( Benchmark(..)
-  , defaultMain
+  ( defaultMain
   , bench
   , benchIO
   , benchShell
-  , isEqualTo
-  , isFasterThan
   , defaultMainWith
   , defaultConfig
+  , Config(..)
+  , isEqualTo
+  , isFasterThan
   , sigma
   , stdError
   , step
+  , Benchmark(..)
   , Analysis(..)
-  , Config(..)
   ) where
 
 import Parser
 
-import Control.Concurrent
+import Control.Arrow
 import Control.Applicative
-import Options.Applicative
+import Control.Concurrent
+import Control.DeepSeq
+import Control.Exception
+import Control.Monad
+import Data.Function
 import Data.Functor
 import Data.IORef
+import Data.List
 import Data.String
-import Control.Arrow
-import Data.Function
+import Data.Time.Clock.System
 import Numeric
 import Numeric.Natural
-import Data.List
-import System.IO
-import Data.Time.Clock.System
-import Control.Monad
+import Options.Applicative
 import System.Console.ANSI hiding (clearLine)
 import System.Console.ANSI.Codes
-import Control.Exception
-import Control.DeepSeq
-import System.Process
 import System.Console.Terminal.Size
+import System.IO
 import System.Mem
+import System.Process
 
 import qualified Data.ByteString.Builder as B
 import qualified Data.Set as S
@@ -233,7 +233,7 @@ benchShell :: String -> String -> Benchmark
 benchShell label cmd = Benchmark label (Analysis 0 0 0 0) $ measure go
     where go n = uncurry (>>) $ ((`replicateM_` f 10000) *** f) (n `divMod` 10000)
           f x = withCreateProcess (shell (intercalate ";" $ replicate x cmd)) {std_out = CreatePipe, std_err = CreatePipe} $ \_ _ _ p ->
-            waitForProcess p >> threadDelay 0
+            waitForProcess p >> threadDelay 0 -- this is needed to let UserInterrupt be handled
 
 {-# INLINE renderAnalysis #-}
 renderAnalysis :: Config -> Analysis -> B.Builder
