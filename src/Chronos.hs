@@ -26,7 +26,6 @@ import Control.DeepSeq
 import Control.Exception
 import Control.Monad
 import Data.Function
-import Data.Functor
 import Data.IORef
 import Data.List
 import Data.String
@@ -34,7 +33,7 @@ import Data.Time.Clock.System
 import Numeric
 import Numeric.Natural
 import Options.Applicative
-import System.Console.ANSI hiding (clearLine)
+import System.Console.ANSI
 import System.Console.ANSI.Codes
 import System.Console.Terminal.Size
 import System.IO
@@ -139,9 +138,9 @@ linesUp n | n > 0 = csi' [n] 'F'
 linesDown :: Int -> B.Builder
 linesDown = linesUp . negate
 
-clearLine :: Config -> B.Builder
-clearLine cfg | printOnce cfg = mempty
-              | otherwise = csi' [0] 'K'
+clear :: Config -> B.Builder
+clear cfg | printOnce cfg = mempty
+          | otherwise = csi' [0] 'K'
 
 mUnless :: Monoid m => Bool -> m -> m
 mUnless t = mWhen (not t)
@@ -154,15 +153,15 @@ renderBenchmark cfg w maxDuration Benchmark{..}
   = mUnless (simple cfg) (sgrBuilder $ SetColor Foreground Vivid Cyan)
   <> fromString name
   <> mUnless (simple cfg) (sgrBuilder Reset)
-  <> mUnless (sameLine cfg) (clearLine cfg <> B.char7 '\n' <> B.char7 ' ')
+  <> mUnless (sameLine cfg) (clear cfg <> B.char7 '\n' <> B.char7 ' ')
   <> B.char7 ' '
   <> renderAnalysis cfg analysis
-  <> clearLine cfg
+  <> clear cfg
   <> B.char7 '\n'
   <> mUnless (hideBar cfg)
   ( mUnless (samples analysis <= 1)
     ( barBuilder cfg w (mean analysis / maxDuration) (min 1 $ sigmaLevel cfg * stdError analysis / fromRational (mean analysis)) (min 1 $ sigma analysis / fromRational (mean analysis))
-      <> clearLine cfg
+      <> clear cfg
     ) <> B.char7 '\n'
   )
 
