@@ -1,15 +1,23 @@
 {-# LANGUAGE RecordWildCards #-}
 
+-- | Library to comparatively benchmark pure functions, impure
+-- functions and shell commands with lazy precision.
+
 module Chronos
-  ( defaultMain
+  (
+    -- * Benchmark
+    defaultMain
   , bench
   , benchIO
   , benchShell
+    -- * Configuration
   , defaultMainWith
   , defaultConfig
   , Config(..)
+    -- * Testing
   , isEqualTo
   , isFasterThan
+    -- * Analysis
   , standardDeviation
   , standardError
   , variance
@@ -61,15 +69,15 @@ instance Ord BenchmarkMeta where
 -- | Options wich can be specified on the command line or with defaultMainWith.
 data Config
   = Config
-  { hideBar :: Bool
-  , sameLine :: Bool
-  , hideDetails :: Bool
-  , printOnce :: Bool
-  , sortByMean :: Bool
-  , simple :: Bool
-  , confidence :: Double
-  , timeout :: Maybe Double
-  , relativeError :: Maybe Double
+  { hideBar :: Bool -- ^ Hide the bar indicating relative performance.
+  , sameLine :: Bool -- ^ Print the analysis on the same line as the command.
+  , hideDetails :: Bool -- ^ Hide standard deviation and number of samples.
+  , printOnce :: Bool -- ^ Print only once the analysis.  This is will print the analysis on timeout, maximal relative error or ctrl-c.
+  , sortByMean :: Bool -- ^ Sort benchmarks by mean duration.
+  , simple :: Bool -- ^ Don't colorize output and don't use unicode.
+  , confidence :: Double -- ^ Factor by which the standard error will be multiplied for calculating confidence intervals (default is 6).
+  , timeout :: Maybe Double -- ^ Timeout after which the program is terminated. It finishes the currently running benchmark.
+  , relativeError :: Maybe Double -- ^ After every benchmark has got a relative error (calculated via confidence interval) below DOUBLE the program is terminated.
   } deriving (Show, Read, Eq, Ord)
 
 -- | Name, current analysis and function of a benchmark.
