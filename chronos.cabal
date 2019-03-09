@@ -3,7 +3,7 @@ cabal-version:       2.2
 name:                chronos
 version:             0.1.0.0
 synopsis:            Benchmarking tool with focus on comparing results.
-description:         This tool performs lazy benchmarking of shell commands with continuous feedback and improving precision.
+description:         This tool performs lazy benchmarking of functions and shell commands with continuous feedback and improving precision.
 license:             BSD-3-Clause
 license-file:        LICENSE
 author:              Florian Knupfer
@@ -15,6 +15,10 @@ tested-with:         GHC == 8.4.4
 copyright:           2019, Florian Knupfer
 category:            Development, Performance, Testing, Benchmarking
 extra-source-files:  CHANGELOG.md
+                   , README.md
+source-repository    head
+   Type: git
+   Location: https://github.com/knupfer/chronos
 
 library
   exposed-modules:     Chronos
