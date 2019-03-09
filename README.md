@@ -83,16 +83,16 @@ main = defaultMain
   ]
 ```
 
-## Comparision
+## Comparison
 
 Comparing `chronos` to `bench` and `hyperfine`:
 
 `chronos`
-- intersperses all benchmarks, therefore allowing you fast comparisions
+- intersperses all benchmarks, therefore allowing you fast comparisons
 - uses scientific notation
 - is more robust to external loads because ouf the interspersing (it will affect all benchmarks and not only some)
 - uses a number of significant digits according to the current standard error (so with time more digits are presented and not always 4 which is often the wrong thing to do)
-- uses bars with confidence intervals on the command line for easy comparision
+- uses bars with confidence intervals on the command line for easy comparison
 
 Comparing `chronos` to `criterion`:
 
