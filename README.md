@@ -15,9 +15,13 @@ presented precision.  It will intersperse all benchmarks for fastest
 possible overview and to distribute any external load over all
 benchmarks to improve precision.
 
+![chronos](https://user-images.githubusercontent.com/5609565/54072918-5ec9ab00-4281-11e9-851a-7a4bde1295b2.png)
+
 ## Options
 
 `chronos` presents rich command line options.
+
+![options](https://user-images.githubusercontent.com/5609565/54072912-55d8d980-4281-11e9-909e-ea7c06a17d6a.png)
 
 You can as well use autocomplete of your shell with following command:
 ```bash
