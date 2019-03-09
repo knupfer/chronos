@@ -109,26 +109,23 @@ defaultMain bs = flip defaultMainWith bs =<< execParser opts
 -- | Construct a benchmark of a name, a pure function and an argument.
 --
 -- > bench "reverse abc" reverse "abc"
-{-# INLINE bench #-}
 bench :: NFData b => String -> (a -> b) -> a -> Benchmark
 bench label f x = Benchmark label (Analysis 0 0 0 0) $ \ana -> newIORef x >>= \io -> measure (\n -> replicateM_ n $ (return$!) . force . f =<< readIORef io) ana
 
 -- | Construct a benchmark of a name and an impure function.
 --
 -- > benchIO "ioref" (newIORef () >>= readIORef)
-{-# INLINE benchIO #-}
 benchIO :: String -> IO a -> Benchmark
 benchIO label io = Benchmark label (Analysis 0 0 0 0) (measure (`replicateM_` io))
 
 -- | Construct a benchmark of a name and a shell command.
 --
 -- > benchShell "sleep is slow" "sleep 0"
-{-# INLINE benchShell #-}
 benchShell :: String -> String -> Benchmark
 benchShell label cmd = Benchmark label (Analysis 0 0 0 0) $ measure go
-    where go n = uncurry (>>) $ ((`replicateM_` f 10000) *** f) (n `divMod` 10000)
-          f x = withCreateProcess (shell (intercalate ";" $ replicate x cmd)) {std_out = CreatePipe, std_err = CreatePipe} $ \_ _ _ p ->
-            waitForProcess p >> threadDelay 0 -- this is needed to let UserInterrupt be handled
+  where go n = uncurry (>>) $ ((`replicateM_` f 10000) *** f) (n `divMod` 10000)
+        f x = withCreateProcess (shell (intercalate ";" $ replicate x cmd)) {std_out = CreatePipe, std_err = CreatePipe} $ \_ _ _ p ->
+          waitForProcess p >> threadDelay 0 -- this is needed to let UserInterrupt be handled
 
 -- | Configurable main function for running a list of benchmarks.
 --
@@ -138,7 +135,6 @@ defaultMainWith _ [] = pure ()
 defaultMainWith cfg bs | printOnce cfg = go (pure ())
                        | otherwise = bracket_ hideCursor showCursor
                          . go . B.hPutBuilder stdout . fromString $ replicate (printHeight cfg*length bs) '\n'
-
   where go mkSpace = hSetEcho stdin False *> mkSpace *> warmup *> runMain cfg (S.fromList . zipWith (BenchmarkMeta 0 0) [1..] $ reverse pad)
         pad | sameLine cfg = let len = maximum (map (length . name) bs) in map (\x -> x{name = take len $ name x ++ repeat ' '}) bs
             | otherwise = bs
@@ -202,7 +198,6 @@ variance a | samples a > 1 = qFactor a / fromIntegral (samples a - 1)
 
 -- | Run the benchmark once and update its analysis.  For functions
 -- with very low runtimes multiple runs will be executed.
-{-# INLINE step #-}
 step :: Benchmark -> IO Benchmark
 step (Benchmark n a f) = flip (Benchmark n) f <$> f a
 
@@ -285,7 +280,6 @@ runMain cfg = printAll <=< go . (,) 0
       | sortByMean cfg = printAll set
       | otherwise = printBenchmark cfg n
 
-{-# INLINE measure #-}
 measure :: (Int -> IO a) -> Analysis -> IO Analysis
 measure cmd ana
   = performMinorGC
@@ -294,7 +288,6 @@ measure cmd ana
   <* cmd (fromIntegral $ weightOf ana)
   <*> getSystemTime
 
-{-# INLINE renderAnalysis #-}
 renderAnalysis :: Config -> Analysis -> B.Builder
 renderAnalysis cfg a@Analysis{..}
   = mUnless (samples == 0) $ B.char7 't' <> B.char7 '='
@@ -372,7 +365,6 @@ informationOf Analysis{..} = fromRational mean ** 0.7 * fromIntegral samples
 weightOf :: Analysis -> Natural
 weightOf Analysis{..} = fromIntegral . max 1 . min samples . round . recip $ (fromRational mean :: Double) ** 0.7
 
-{-# INLINE refineAnalysis #-}
 refineAnalysis :: Analysis -> SystemTime -> SystemTime -> Analysis
 refineAnalysis ana@Analysis{..} begin end = Analysis newSamples newSquaredWeights newMean newQFactor
   where
@@ -409,9 +401,7 @@ barBuilder cfg width m stdErr sd | simple cfg =
   <> sgrBuilder (SetColor Foreground Vivid Black)
   <> B.stringUtf8 (replicate sigmaLength '▔')
   <> sgrBuilder Reset
-
   where
-
     len = fromRational m * fromIntegral (width - 6) / 2
     valueLength = round len - errorLength
     errorLength = round $ len * stdErr
