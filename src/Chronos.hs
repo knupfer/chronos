@@ -98,7 +98,7 @@ data Analysis
   } deriving (Eq, Ord, Show, Read)
 
 -- | Main function for running a list of benchmarks.  It also allows
--- to specify via commandline options.
+-- to specify options via commandline.
 --
 -- > defaultMain [bench "not True" not True, bench "id True" id True]
 defaultMain :: [Benchmark] -> IO ()
