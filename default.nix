@@ -4,4 +4,4 @@ with nixpkgs;
 let ghc = if compiler == "" then haskellPackages else haskell.packages.${compiler};
     in
 
-haskell.lib.shellAware (ghc.callCabal2nix "chronos" (lib.sourceFilesBySuffices ./. [".cabal" ".hs" "LICENSE" ".md"]) {})
+haskell.lib.shellAware (ghc.callCabal2nix "chronos-bench" (lib.sourceFilesBySuffices ./. [".cabal" ".hs" "LICENSE" ".md"]) {})
