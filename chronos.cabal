@@ -9,7 +9,9 @@ license-file:        LICENSE
 author:              Florian Knupfer
 maintainer:          fknupfer@gmail.com
 homepage:            https://github.com/knupfer/chronos
-tested-with:         GHC == 8.6.3
+tested-with:         GHC == 8.4.4
+                   , GHC == 8.6.3
+                   , GHC == 8.6.4
 copyright:           2019, Florian Knupfer
 category:            Development, Performance, Testing, Benchmarking
 extra-source-files:  CHANGELOG.md
