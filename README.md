@@ -3,7 +3,7 @@
 `chronos` performs lazy benchmarking of shell commands with continuous feedback and improving precision.
 
 Please look at the documentation of the module for an overview of the api:
-[Html](https://hackage.haskell.org/package/chronos/docs/Chronos.html)
+[Html](https://hackage.haskell.org/package/chronos-bench/docs/Chronos.html)
 
 ## How does it work?
 
