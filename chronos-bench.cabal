@@ -1,7 +1,7 @@
 cabal-version:       2.2
 
 name:                chronos-bench
-version:             0.2.0.1
+version:             0.2.0.2
 synopsis:            Benchmarking tool with focus on comparing results.
 description:         This tool performs lazy benchmarking of functions and shell commands with continuous feedback and improving precision.
 license:             BSD-3-Clause
