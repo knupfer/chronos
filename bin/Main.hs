@@ -1,6 +1,6 @@
 module Main where
 
-import Chronos
+import Chronos.Bench
 import Parser
 
 import Control.Applicative
