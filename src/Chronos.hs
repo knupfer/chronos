@@ -368,12 +368,13 @@ weightOf Analysis{..} = fromIntegral . max 1 . min samples . round . recip $ (fr
 refineAnalysis :: Analysis -> SystemTime -> SystemTime -> Analysis
 refineAnalysis ana@Analysis{..} begin end = Analysis newSamples newSquaredWeights newMean newQFactor
   where
-    newSamples = samples + weightOf ana
-    newSquaredWeights = squaredWeights + weightOf ana*weightOf ana
+    newSamples = samples + weight
+    newSquaredWeights = squaredWeights + weight*weight
     newMean = mean + diffWeight / fromIntegral newSamples
     newQFactor = qFactor + diffWeight * (time - newMean)
-    diffWeight = fromIntegral (weightOf ana) * (time - mean)
-    time = (toSeconds end - toSeconds begin) / fromIntegral (weightOf ana)
+    diffWeight = fromIntegral weight * (time - mean)
+    time = (toSeconds end - toSeconds begin) / fromIntegral weight
+    weight = weightOf ana
     toSeconds t = fromIntegral (systemSeconds t) + fromIntegral (systemNanoseconds t) / 1e9
 
 sgrBuilder :: SGR -> B.Builder
