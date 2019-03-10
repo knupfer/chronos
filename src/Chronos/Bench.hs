@@ -3,7 +3,7 @@
 -- | Library to comparatively benchmark pure functions, impure
 -- functions and shell commands with lazy precision.
 
-module Chronos
+module Chronos.Bench
   (
     -- * Benchmark
     defaultMain
@@ -28,6 +28,8 @@ module Chronos
 
 import Parser
 
+import Chronos (now, Time(..))
+
 import Control.Arrow
 import Control.Applicative
 import Control.Concurrent
@@ -38,7 +40,6 @@ import Data.Function
 import Data.IORef
 import Data.List
 import Data.String
-import Data.Time.Clock.System
 import Numeric
 import Numeric.Natural
 import Options.Applicative
@@ -284,9 +285,9 @@ measure :: (Int -> IO a) -> Analysis -> IO Analysis
 measure cmd ana
   = performMinorGC
   >> refineAnalysis ana
-  <$> getSystemTime
+  <$> now
   <* cmd (fromIntegral $ weightOf ana)
-  <*> getSystemTime
+  <*> now
 
 renderAnalysis :: Config -> Analysis -> B.Builder
 renderAnalysis cfg a@Analysis{..}
@@ -365,17 +366,16 @@ informationOf Analysis{..} = fromRational mean ** 0.7 * fromIntegral samples
 weightOf :: Analysis -> Natural
 weightOf Analysis{..} = fromIntegral . max 1 . min samples . round . recip $ (fromRational mean :: Double) ** 0.7
 
-refineAnalysis :: Analysis -> SystemTime -> SystemTime -> Analysis
-refineAnalysis ana@Analysis{..} begin end = Analysis newSamples newSquaredWeights newMean newQFactor
+refineAnalysis :: Analysis -> Time -> Time -> Analysis
+refineAnalysis ana@Analysis{..} (Time begin) (Time end) = Analysis newSamples newSquaredWeights newMean newQFactor
   where
     newSamples = samples + weight
     newSquaredWeights = squaredWeights + weight*weight
     newMean = mean + diffWeight / fromIntegral newSamples
     newQFactor = qFactor + diffWeight * (time - newMean)
     diffWeight = fromIntegral weight * (time - mean)
-    time = (toSeconds end - toSeconds begin) / fromIntegral weight
+    time = (fromIntegral (end - begin) / 1e9) / fromIntegral weight
     weight = weightOf ana
-    toSeconds t = fromIntegral (systemSeconds t) + fromIntegral (systemNanoseconds t) / 1e9
 
 sgrBuilder :: SGR -> B.Builder
 sgrBuilder = (`csi'` 'm') . sgrToCode

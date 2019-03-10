@@ -1,6 +1,6 @@
 module Main where
 
-import Chronos
+import Chronos.Bench
 
 main :: IO ()
 main = defaultMain $ map (\n -> bench ("fib " ++ show n) fib n) [1..10]

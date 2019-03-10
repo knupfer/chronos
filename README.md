@@ -37,7 +37,7 @@ You can use `chronos` as a haskell library to benchmark pure or impure functions
 ```haskell
 module Main where
 
-import Chronos
+import Chronos.Bench
 
 main :: IO ()
 main = defaultMain
@@ -56,7 +56,7 @@ fib n = fib (n-1) + fib (n-2)
 ```haskell
 module Main where
 
-import Chronos
+import Chronos.Bench
 
 import Control.Concurrent
 import Data.IORef
@@ -73,7 +73,7 @@ main = defaultMain
 ```haskell
 module Main where
 
-import Chronos
+import Chronos.Bench
 
 main :: IO ()
 main = defaultMain
