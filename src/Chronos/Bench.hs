@@ -136,7 +136,7 @@ defaultMainWith _ [] = pure ()
 defaultMainWith cfg bs | printOnce cfg = go (pure ())
                        | otherwise = bracket_ hideCursor showCursor
                          . go . B.hPutBuilder stdout . fromString $ replicate (printHeight cfg*length bs) '\n'
-  where go mkSpace = hSetEcho stdin False *> mkSpace *> warmup *> runMain cfg (S.fromList . zipWith (BenchmarkMeta 0 0) [1..] $ reverse pad)
+  where go mkSpace = hSetEcho stdin False *> mkSpace *> warmup *> (flip (runMain cfg) (S.fromList . zipWith (BenchmarkMeta 0 0) [1..] $ reverse pad) =<< now)
         pad | sameLine cfg = let len = maximum (map (length . name) bs) in map (\x -> x{name = take len $ name x ++ repeat ' '}) bs
             | otherwise = bs
 
@@ -249,19 +249,26 @@ renderBenchmark cfg w maxDuration Benchmark{..}
 printHeight :: Config -> Int
 printHeight cfg = 3 - fromEnum (hideBar cfg) - fromEnum (sameLine cfg)
 
-runMain :: Config -> S.Set BenchmarkMeta -> IO ()
-runMain cfg = printAll <=< go . (,) 0
+runMain :: Config -> Time -> S.Set BenchmarkMeta -> IO ()
+runMain cfg (Time start) = printAll <=< go . (,) (0,0)
   where
-    go (m, s) = handleJust (\e -> if e == UserInterrupt then Just s else Nothing) pure $
+    go ((pos,m), s) = handleJust (\e -> if e == UserInterrupt then Just s else Nothing) pure $
         let (BenchmarkMeta{..}, s') = S.deleteFindMin s in do
               ana <- analysis <$> step benchmark
-              let newMax | m == mean (analysis benchmark) = mean ana
-                         | otherwise = max m $ mean ana
-                  new = BenchmarkMeta (informationOf ana) newMax position benchmark{analysis = ana}
+              let newMax | pos == position = (pos, mean ana)
+                         | mean ana > m = (position, mean ana)
+                         | otherwise = (pos, m)
+                  new = BenchmarkMeta (informationOf ana) (snd newMax) position benchmark{analysis = ana}
                   set = S.insert new s'
               mask_ $ pp new set
 
-              if terminates set
+              timeup <- case timeout cfg of
+                Just to -> do
+                  Time end <- now
+                  pure $ fromIntegral (end - start) / 1e9 >= to
+                Nothing -> pure False
+
+              if terminates set || timeup
                  then pure set
                  else go (newMax, set)
 
@@ -272,9 +279,9 @@ runMain cfg = printAll <=< go . (,) 0
       when (sortByMean cfg && not (printOnce cfg)) . B.hPutBuilder stdout . linesUp $ printHeight cfg*length set
       mapM_ (printBenchmark cfg) . f $ S.toList set
 
-    terminates set = let as = map (analysis . benchmark) $ S.toList set
-      in maybe False (<= fromRational (sum $ map (uncurry (*) . (mean &&& fromIntegral . samples)) as)) (timeout cfg)
-      || maybe False (>= maximum (map (uncurry (/) . ((confidence cfg*) . standardError &&& fromRational . mean)) as)) (relativeError cfg)
+    terminates set = case relativeError cfg of
+        Just re -> re >= maximum (map (uncurry (/) . ((confidence cfg*) . standardError &&& fromRational . mean) . analysis . benchmark) $ S.toList set)
+        Nothing -> False
 
     pp n set
       | printOnce cfg = pure ()
