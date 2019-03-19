@@ -10,6 +10,7 @@ configParser
        Bool ->
        Bool ->
        Bool ->
+       Bool ->
        Double ->
        Maybe Double ->
        Maybe Double ->
@@ -20,6 +21,7 @@ configParser f = f
   <*> switch ( long "same-line" <> help "Print the analysis on the same line as the command." )
   <*> switch ( long "hide-details" <> help "Hide standard deviation and number of samples." )
   <*> switch ( long "print-once" <> help "Print only once the analysis.  This is will print the analysis on timeout, maximal relative error or ctrl-c." )
+  <*> switch ( long "json" <> help "Output JSON instead of charts. Implies 'print once'." )
   <*> switch ( long "sort" <> help "Sort benchmarks by mean duration." )
   <*> switch ( long "simple" <> help "Don't colorize output and don't use unicode." )
   <*> option auto
