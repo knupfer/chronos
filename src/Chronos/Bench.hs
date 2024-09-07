@@ -125,8 +125,7 @@ benchIO label io = Benchmark label (Analysis 0 0 0 0) (measure (`replicateM_` io
 benchShell :: String -> String -> Benchmark
 benchShell label cmd = Benchmark label (Analysis 0 0 0 0) $ measure go
   where go n = uncurry (>>) $ ((`replicateM_` f 10000) *** f) (n `divMod` 10000)
-        f x = withCreateProcess (shell (intercalate ";" $ replicate x cmd)) {std_out = CreatePipe, std_err = CreatePipe} $ \_ _ _ p ->
-          waitForProcess p >> threadDelay 0 -- this is needed to let UserInterrupt be handled
+        f x = readCreateProcess (shell (intercalate ";" $ replicate x cmd)) ""
 
 -- | Configurable main function for running a list of benchmarks.
 --
