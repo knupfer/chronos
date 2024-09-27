@@ -1,4 +1,4 @@
-{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE OverloadedStrings, RecordWildCards #-}
 
 -- | Library to comparatively benchmark pure functions, impure
 -- functions and shell commands with lazy precision.
@@ -36,6 +36,8 @@ import Control.Concurrent
 import Control.DeepSeq
 import Control.Exception
 import Control.Monad
+import Data.Aeson
+import Data.Aeson.Text (encodeToLazyText)
 import Data.Function
 import Data.IORef
 import Data.List
@@ -52,6 +54,9 @@ import System.Process
 
 import qualified Data.ByteString.Builder as B
 import qualified Data.Set as S
+import qualified Data.Text as T
+import qualified Data.Text.IO as TIO
+import qualified Data.Text.Lazy as LText
 
 data BenchmarkMeta
   = BenchmarkMeta
@@ -74,6 +79,7 @@ data Config
   , sameLine :: Bool -- ^ Print the analysis on the same line as the command.
   , hideDetails :: Bool -- ^ Hide standard deviation and number of samples.
   , printOnce :: Bool -- ^ Print only once the analysis.  This is will print the analysis on timeout, maximal relative error or ctrl-c.
+  , outputJSON :: Bool -- ^ Output JSON instead of charts. Implies 'printOnce'.
   , sortByMean :: Bool -- ^ Sort benchmarks by mean duration.
   , simple :: Bool -- ^ Don't colorize output and don't use unicode.
   , confidence :: Double -- ^ Factor by which the standard error will be multiplied for calculating confidence intervals (default is 6).
@@ -97,6 +103,15 @@ data Analysis
   , mean :: Rational
   , qFactor :: Rational
   } deriving (Eq, Ord, Show, Read)
+
+instance ToJSON Analysis where
+  toJSON a =
+    object
+      [ "samples" .= samples a
+      , "squared-weights" .= squaredWeights a
+      , "mean" .= mean a
+      , "q-factor" .= qFactor a
+      ]
 
 -- | Main function for running a list of benchmarks.  It also allows
 -- to specify options via commandline.
@@ -132,7 +147,7 @@ benchShell label cmd = Benchmark label (Analysis 0 0 0 0) $ measure go
 -- > defaultMainWith defaultConfig {hideBar = True} [bench "id ()" id ()]
 defaultMainWith :: Config -> [Benchmark] -> IO ()
 defaultMainWith _ [] = pure ()
-defaultMainWith cfg bs | printOnce cfg = go (pure ())
+defaultMainWith cfg bs | printOnce cfg || outputJSON cfg = go (pure ())
                        | otherwise = bracket_ hideCursor showCursor
                          . go . B.hPutBuilder stdout . fromString $ replicate (printHeight cfg*length bs) '\n'
   where go mkSpace = hSetEcho stdin False *> mkSpace *> warmup *> (flip (runMain cfg) (S.fromList . zipWith (BenchmarkMeta 0 0) [1..] $ reverse pad) =<< now)
@@ -147,6 +162,7 @@ defaultConfig = Config
   , sameLine = False
   , hideDetails = False
   , printOnce = False
+  , outputJSON = False
   , sortByMean = False
   , simple = False
   , confidence = 6
@@ -274,18 +290,30 @@ runMain cfg (Time start) = printAll <=< go . (,) (0,0)
     f | sortByMean cfg = sortOn (negate . mean . analysis . benchmark)
       | otherwise = sortOn (negate . position)
 
-    printAll set = do
-      when (sortByMean cfg && not (printOnce cfg)) . B.hPutBuilder stdout . linesUp $ printHeight cfg*length set
-      mapM_ (printBenchmark cfg) . f $ S.toList set
+    printAll set
+      | outputJSON cfg = putJSON (benchMetasToJSON set)
+      | otherwise = do
+          when (sortByMean cfg && not (printOnce cfg)) . B.hPutBuilder stdout . linesUp $ printHeight cfg*length set
+          mapM_ (printBenchmark cfg) . f $ S.toList set
 
     terminates set = case relativeError cfg of
         Just re -> re >= maximum (map (uncurry (/) . ((confidence cfg*) . standardError &&& fromRational . mean) . analysis . benchmark) $ S.toList set)
         Nothing -> False
 
     pp n set
-      | printOnce cfg = pure ()
+      | printOnce cfg || outputJSON cfg = pure ()
       | sortByMean cfg = printAll set
       | otherwise = printBenchmark cfg n
+
+    benchMetasToJSON :: S.Set BenchmarkMeta -> Value
+    benchMetasToJSON
+      = object
+      . fmap (\bm -> (T.pack (name (benchmark bm)), toJSON (analysis (benchmark bm))))
+      . S.toList
+
+    putJSON :: ToJSON a => a -> IO ()
+    putJSON =
+      TIO.putStrLn . LText.toStrict . encodeToLazyText
 
 measure :: (Int -> IO a) -> Analysis -> IO Analysis
 measure cmd ana
